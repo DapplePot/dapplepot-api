@@ -1,0 +1,101 @@
+import { Hono } from 'hono'
+import { streamSSE } from 'hono/streaming'
+import { jwtAuth } from '../middleware/auth.js'
+import { rateLimitMiddleware } from '../middleware/ratelimit.js'
+import { getSessionList, getSessionPg, getLiveSessions, getSessionAlerts } from '../queries/sessions.pg.js'
+import { getTracePage, getStateHistory } from '../queries/sessions.ch.js'
+import { stitchSessionDetail } from '../stitchers/session-detail.js'
+import { NotFoundError } from '../types/common.js'
+
+type Variables = { tenantId: string; userId: string }
+
+export const sessionsRouter = new Hono<{ Variables: Variables }>()
+
+sessionsRouter.use('*', jwtAuth)
+sessionsRouter.use('*', rateLimitMiddleware)
+
+sessionsRouter.get('/live', async (c) => {
+  const tenantId = c.get('tenantId')
+  return streamSSE(c, async (stream) => {
+    while (true) {
+      const sessions = await getLiveSessions(tenantId)
+      await stream.writeSSE({ event: 'sessions', data: JSON.stringify(sessions) })
+      await stream.sleep(2000)
+    }
+  })
+})
+
+sessionsRouter.get('/', async (c) => {
+  const tenantId = c.get('tenantId')
+  const q = c.req.query()
+
+  const { sessions, total } = await getSessionList(tenantId, {
+    page: q['page'] ? Number(q['page']) : 1,
+    limit: q['limit'] ? Number(q['limit']) : 20,
+    status: q['status'],
+    agentId: q['agentId'],
+    environment: q['environment'],
+    since: q['since'],
+    until: q['until'],
+    q: q['q'],
+  })
+
+  const limit = Math.min(q['limit'] ? Number(q['limit']) : 20, 100)
+  const page = q['page'] ? Number(q['page']) : 1
+
+  return c.json({
+    data: sessions,
+    total,
+    page,
+    perPage: limit,
+    totalPages: Math.ceil(total / limit),
+  })
+})
+
+sessionsRouter.get('/:id/trace', async (c) => {
+  const tenantId = c.get('tenantId')
+  const sessionId = c.req.param('id')
+  const afterSeq = Number(c.req.query('after_seq') ?? 0)
+  const limit = Math.min(Number(c.req.query('limit') ?? 100), 200)
+
+  // Verify session ownership in PG first — an open session may legitimately have
+  // zero ClickHouse events yet, so empty trace != 404.
+  const pgRow = await getSessionPg(tenantId, sessionId)
+  if (!pgRow) throw new NotFoundError(`Session ${sessionId} not found`)
+
+  const tracePage = await getTracePage(tenantId, sessionId, afterSeq, limit)
+
+  if (pgRow.status === 'finalised') {
+    c.header('Cache-Control', 'public, max-age=300, s-maxage=300')
+    c.header('Vary', 'Authorization')
+  }
+
+  return c.json(tracePage)
+})
+
+sessionsRouter.get('/:id/state-history', async (c) => {
+  const tenantId = c.get('tenantId')
+  const sessionId = c.req.param('id')
+  const history = await getStateHistory(tenantId, sessionId)
+  return c.json(history)
+})
+
+sessionsRouter.get('/:id/alerts', async (c) => {
+  const tenantId = c.get('tenantId')
+  const sessionId = c.req.param('id')
+  const alerts = await getSessionAlerts(tenantId, sessionId)
+  return c.json(alerts)
+})
+
+sessionsRouter.get('/:id', async (c) => {
+  const tenantId = c.get('tenantId')
+  const sessionId = c.req.param('id')
+  const detail = await stitchSessionDetail(tenantId, sessionId)
+
+  if (detail.status === 'finalised') {
+    c.header('Cache-Control', 'public, max-age=300, s-maxage=300')
+    c.header('Vary', 'Authorization')
+  }
+
+  return c.json(detail)
+})

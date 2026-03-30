@@ -1,0 +1,18 @@
+import { Hono } from 'hono'
+import { sessionsRouter } from './sessions.js'
+import { analyticsRouter } from './analytics.js'
+import { alertsRouter } from './alerts.js'
+import { controlRouter } from './control.js'
+import { rulesRouter } from './rules.js'
+import { channelsRouter } from './channels.js'
+
+type Variables = { tenantId: string; userId: string }
+
+export function mountRoutes(app: Hono<{ Variables: Variables }>) {
+  app.route('/v1/sessions', sessionsRouter)
+  app.route('/v1/analytics', analyticsRouter)
+  app.route('/v1/alerts', alertsRouter)
+  app.route('/v1/control', controlRouter)
+  app.route('/v1/rules', rulesRouter)
+  app.route('/v1/channels', channelsRouter)
+}
