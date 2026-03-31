@@ -97,8 +97,6 @@ only integration points between the two services.
 ```
 dapplepot_api/
 ├── agent.md                        ← full IDE agent context (read before coding)
-├── HANDOFF_dapplepot_api.md        ← pipeline handoff — DB schemas, Redis keys
-├── sdk_contract.md                 ← SDK HTTP contract (for reference; ingest is pipeline's)
 ├── README.md                       ← this file
 ├── package.json
 ├── pnpm-lock.yaml
@@ -124,7 +122,7 @@ dapplepot_api/
     │   │                              WebhookConfig, SlackConfig, PagerdutyConfig
     │   ├── common.ts               ← Paginated<T>, ApiError, ListParams
     │   └── security.ts             ← RiskBand, SessionRiskScore, SecurityFinding,
-    │                                  SecurityOverview, RemediationCard  (Zone 6)
+    │                                  SecurityOverview, RemediationCard, InjectionSignature  (Zone 6)
     │
     ├── lib/                        ← infra clients
     │   ├── postgres.ts             ← postgres.js pool + queryRow/queryRows/queryValue

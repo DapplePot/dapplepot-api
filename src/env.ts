@@ -15,6 +15,9 @@ const envSchema = z.object({
   CACHE_TTL_OVERVIEW: z.coerce.number().default(30),
   CACHE_TTL_ANALYTICS: z.coerce.number().default(60),
   CACHE_TTL_COST: z.coerce.number().default(300),
+  CACHE_TTL_SECURITY_OVERVIEW: z.coerce.number().default(120),
+  CACHE_TTL_SESSION_SCORE: z.coerce.number().default(300),
+  CACHE_TTL_REMEDIATION: z.coerce.number().default(300),
 })
 
 function parseEnv() {

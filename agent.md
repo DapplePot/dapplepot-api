@@ -91,7 +91,9 @@ dapplepot_api/
 │   │   ├── analytics.ts                ← OverviewMetrics, LlmUsagePoint, ErrorRatePoint, LatencyStat
 │   │   ├── rule.ts                     ← PolicyRule, RuleType, RuleCondition, AlertConfig
 │   │   ├── channel.ts                  ← DeliveryChannel, ChannelType, ChannelConfig
-│   │   └── common.ts                   ← Paginated<T>, ApiError, DateRange, SortOrder
+│   │   ├── common.ts                   ← Paginated<T>, ApiError, DateRange, SortOrder
+│   │   └── security.ts                 ← RiskBand, SessionRiskScore, SecurityFinding,
+│   │                                      SecurityOverview, RemediationCard, InjectionSignature  (Zone 6)
 │   │
 │   │   # Infrastructure clients — one module per store
 │   ├── lib/
@@ -115,7 +117,9 @@ dapplepot_api/
 │   │   ├── alerts.ts                   ← GET /v1/alerts, /:id  |  PUT /v1/alerts/:id/status
 │   │   ├── control.ts                  ← POST /v1/control/kill-switch, /interrupt  |  GET /v1/control/commands
 │   │   ├── rules.ts                    ← GET/POST /v1/rules  |  PUT /v1/rules/:id
-│   │   └── channels.ts                 ← GET/POST /v1/channels  |  PUT /v1/channels/:id
+│   │   ├── channels.ts                 ← GET/POST /v1/channels  |  PUT /v1/channels/:id
+│   │   └── security.ts                 ← GET /v1/security/overview, /sessions/:id/score,
+│   │                                      /sessions/:id/findings, /remediation, /signatures (Zone 6)
 │   │
 │   │   # Query layer — pure async functions, no HTTP concerns
 │   ├── queries/
@@ -124,7 +128,8 @@ dapplepot_api/
 │   │   ├── analytics.ch.ts             ← All analytics queries (read from aggregate tables)
 │   │   ├── alerts.pg.ts                ← Postgres alert feed + detail queries
 │   │   ├── rules.pg.ts                 ← policy_rules CRUD queries
-│   │   └── channels.pg.ts              ← delivery channel CRUD queries
+│   │   ├── channels.pg.ts              ← delivery channel CRUD queries
+│   │   └── security.pg.ts              ← overview, session score, findings, remediation stats (Zone 6)
 │   │
 │   │   # Stitch layer — combines PG + CH results into final response shape
 │   └── stitchers/
@@ -205,6 +210,20 @@ dapplepot_api/
 | GET | `/v1/channels` | PG | List delivery channels for tenant |
 | POST | `/v1/channels` | PG | Create channel config |
 | PUT | `/v1/channels/:id` | PG | Update channel config (enable/disable, edit) |
+
+### Resource group: Security (5 endpoints — Zone 6, read-only)
+
+Data written by `dapplepot_security`. This service reads and serves the results — it does not run detection or scoring itself.
+
+**Note:** `GET /v1/control/commands` auth path (SDK key) is unaffected. All security endpoints use standard JWT auth.
+
+| Method | Path | Store | Purpose |
+|--------|------|-------|---------|
+| GET | `/v1/security/overview` | PG | Tenant risk summary: band distribution, OWASP freq, top sessions |
+| GET | `/v1/security/sessions/:id/score` | PG | Per-session risk score + signal IDs |
+| GET | `/v1/security/sessions/:id/findings` | PG | Security findings for a session |
+| GET | `/v1/security/remediation` | PG | Top firing signals + remediation guidance |
+| GET | `/v1/security/signatures` | PG | Active injection signatures for tenant |
 
 ---
 
@@ -539,6 +558,10 @@ async function cached<T>(
 | `/v1/sessions/:id/trace` (finalised) | CDN Cache-Control header | 300s | Immutable |
 | `/v1/alerts` | no cache | — | Always live |
 | `/v1/rules` | `dp:api:rules:{tenant}` | 60s | Invalidate on PUT /v1/rules/:id |
+| `/v1/security/overview` | `dp:api:security:overview:{tenant}:{window}` | 120s (`CACHE_TTL_SECURITY_OVERVIEW`) | Matches UI staleTime: 2min |
+| `/v1/security/sessions/:id/score` | `dp:api:security:score:{tenant}:{session}` | 300s (`CACHE_TTL_SESSION_SCORE`) | Scores are immutable once written by scorer |
+| `/v1/security/remediation` | `dp:api:security:remediation:{tenant}:{window}` | 300s (`CACHE_TTL_REMEDIATION`) | Slow-changing aggregate |
+| `/v1/security/signatures` | no cache | — | Always live — signatures update frequently |
 
 ### Rule cache invalidation on update
 
@@ -1107,6 +1130,84 @@ export interface Paginated<T> {
 }
 ```
 
+### Security types (Zone 6) — `types/security.ts`
+
+```typescript
+export type RiskBand = 'clean' | 'low' | 'medium' | 'high' | 'critical'
+
+export interface SessionRiskScore {
+  sessionId:     string
+  tenantId:      string
+  agentId:       string | null
+  riskScore:     number          // 0–100
+  riskBand:      RiskBand
+  signalCount:   number
+  signalIds:     string[]        // ['INJ-001', 'PII-004']
+  scorerVersion: string
+  scoredAt:      string          // ISO 8601
+}
+
+export interface SecurityFinding {
+  findingId:      string
+  sessionId:      string
+  eventId:        string
+  eventType:      string
+  signalId:       string         // INJ-001, OUT-001, PII-004, etc.
+  sigType:        string         // injection | passthrough | pii | agency | tool_scope
+  owaspId:        string         // LLM01 … LLM10
+  severity:       'critical' | 'warning' | 'info'
+  matchedText:    string | null  // always redacted before storage
+  detail:         string | null
+  scoreContrib:   number
+  detectionPhase: 'online' | 'post_session'
+  createdAt:      string
+}
+
+export interface SecurityOverview {
+  window:            string
+  sessionsScored:    number
+  highCriticalCount: number
+  avgRiskScore:      number
+  topSignalId:       string | null
+  topSignalCount:    number
+  bandDistribution:  Record<RiskBand, number>
+  owaspFrequency:    Array<{ owaspId: string; count: number }>
+  highRiskSessions:  Array<{
+    sessionId: string; agentId: string; riskScore: number
+    riskBand: RiskBand; signalIds: string[]
+  }>
+}
+
+export interface RemediationCard {
+  signalId:    string
+  owaspId:     string
+  title:       string
+  description: string
+  fixSteps:    string[]
+  sdkSnippet:  string | null
+  frequency:   number           // how many times this signal fired in the window
+}
+
+export interface InjectionSignature {
+  signatureId: string
+  tenantId:    string | null   // null = platform-wide; non-null = tenant-specific
+  signalId:    string          // INJ-001, PII-004, etc.
+  sigType:     string          // injection | passthrough | pii | agency | tool_scope
+  owaspId:     string          // LLM01 … LLM10
+  pattern:     string          // regex or keyword pattern
+  description: string | null
+  enabled:     boolean
+  createdAt:   string          // ISO 8601
+}
+```
+
+Endpoint → response type mapping:
+- `GET /v1/security/overview` → `SecurityOverview`
+- `GET /v1/security/sessions/:id/score` → `SessionRiskScore` (404 if scorer has not yet run)
+- `GET /v1/security/sessions/:id/findings` → `{ findings: SecurityFinding[] }`
+- `GET /v1/security/remediation` → `{ remediation: RemediationCard[] }`
+- `GET /v1/security/signatures` → `{ signatures: InjectionSignature[] }`
+
 ---
 
 ## 12. Query parameters — standard across all list endpoints
@@ -1215,6 +1316,12 @@ API_CORS_ORIGIN=http://localhost:5173    # dapplepot_ui dev server
 CACHE_TTL_OVERVIEW=30
 CACHE_TTL_ANALYTICS=60
 CACHE_TTL_COST=300
+# Security cache TTLs — aligned with dapplepot_security scorer cadence
+# CACHE_TTL_SECURITY_OVERVIEW: 120s matches UI staleTime: 2min
+# CACHE_TTL_SESSION_SCORE: 300s matches UI staleTime: 5min; scores are immutable once written
+CACHE_TTL_SECURITY_OVERVIEW=120
+CACHE_TTL_SESSION_SCORE=300
+CACHE_TTL_REMEDIATION=300
 ```
 
 Note: Both this service and `dapplepot_pipeline` use Redis DB 0 on the same
@@ -1260,6 +1367,8 @@ src/types/alert.ts                 Alert, AlertSummary, AlertDetail, AlertStatus
 src/types/analytics.ts             OverviewMetrics, LlmUsagePoint, ErrorRatePoint, LatencyStat
 src/types/rule.ts                  PolicyRule, RuleType, RuleCondition, AlertConfig
 src/types/channel.ts               DeliveryChannel, ChannelType, ChannelConfig
+src/types/security.ts              RiskBand, SessionRiskScore, SecurityFinding, SecurityOverview,
+                                   RemediationCard, InjectionSignature  (Zone 6)
 src/lib/postgres.ts                postgres.js pool, queryRow/queryRows/queryValue helpers
 src/lib/clickhouse.ts              @clickhouse/client, query/queryRow helpers
 src/lib/redis.ts                   ioredis pool, get/set/del/publish helpers
@@ -1275,6 +1384,8 @@ src/queries/analytics.ch.ts        getOverviewMetrics, getLlmUsage, getErrorRate
 src/queries/alerts.pg.ts           getAlertList, getAlertDetail, updateAlertStatus, getAlertStats
 src/queries/rules.pg.ts            getRuleList, createRule, updateRule, dryRunRule
 src/queries/channels.pg.ts         getChannelList, createChannel, updateChannel
+src/queries/security.pg.ts         getSecurityOverview, getSessionScore, getSessionFindings,
+                                   getRemediationStats  (Zone 6 — reads tables written by dapplepot_security)
 ```
 
 ### Phase 3 — Stitchers (combine PG + CH, no HTTP)
@@ -1298,6 +1409,7 @@ src/routes/alerts.ts               4 alert endpoints
 src/routes/control.ts              POST kill-switch, POST interrupt, GET SSE channel
 src/routes/rules.ts                GET/POST/PUT rules
 src/routes/channels.ts             GET/POST/PUT channels
+src/routes/security.ts             5 security endpoints — read-only, JWT auth  (Zone 6)
 src/routes/index.ts                mount all groups onto Hono app
 src/index.ts                       Hono app factory, lifespan, startup validation
 ```
@@ -1332,6 +1444,8 @@ tests/integration/control.test.ts
 | 10 | JWT auth for dashboard; SDK key auth for `GET /v1/control/commands` only | SDK never receives a JWT; dashboard users never use SDK keys |
 | 11 | Control commands use `dp:commands:{agent_id}` Redis list, LPOP on read | Matches pipeline's key pattern; consumed-once per sdk_contract.md |
 | 12 | Kill-switch command type is `terminate_session` (not `kill_switch`) | SDK checks `type === 'terminate_session'` — wrong type is silently ignored |
+| 13 | Security endpoints are read-only — no writes to `security_findings` or `session_risk_scores` | `dapplepot_security` (Zone 6) owns those tables; this service only reads them |
+| 14 | Security cache keys use `dp:api:security:` prefix within the shared `dp:api:` namespace | Consistent with other API cache keys; won't collide with pipeline's `dp:sec:` prefix |
 
 ---
 
@@ -1758,6 +1872,11 @@ Run order: `001` before `002`. Both are idempotent (`IF NOT EXISTS` / `IF NOT EX
 - `GET /v1/sessions/live` (SSE) receives events within 2.5s of session open in PG
 - `PUT /v1/alerts/:id/status` updates status and invalidates any related caches
 - `PUT /v1/rules/:id` bumps version, DELs both rule caches, PUBLISHes invalidation
+- `GET /v1/security/overview` returns `SecurityOverview` with correct band distribution and OWASP frequency counts
+- `GET /v1/security/sessions/:id/score` returns `SessionRiskScore` when scored, 404 with `NOT_FOUND` code when scorer hasn't run yet
+- `GET /v1/security/sessions/:id/findings` returns `{ findings: SecurityFinding[] }` — redacted `matchedText`
+- `GET /v1/security/remediation` returns `{ remediation: RemediationCard[] }` — top 10 signals, cache key includes tenant + window
+- `GET /v1/security/signatures` returns `{ signatures: InjectionSignature[] }` — both platform-wide (`tenant_id IS NULL`) and tenant-specific
 
 ---
 

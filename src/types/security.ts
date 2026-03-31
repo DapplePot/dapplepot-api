@@ -58,3 +58,15 @@ export interface RemediationCard {
   sdkSnippet:  string | null    // optional SDK config snippet
   frequency:   number           // how many times this signal fired in the window
 }
+
+export interface InjectionSignature {
+  signatureId:  string
+  tenantId:     string | null   // null = platform-wide; non-null = tenant-specific
+  signalId:     string          // INJ-001, PII-004, etc.
+  sigType:      string          // injection | passthrough | pii | agency | tool_scope
+  owaspId:      string          // LLM01 … LLM10
+  pattern:      string          // regex or keyword pattern
+  description:  string | null
+  enabled:      boolean
+  createdAt:    string          // ISO 8601
+}
