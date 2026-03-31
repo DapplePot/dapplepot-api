@@ -54,12 +54,18 @@ dapplepot_ui (React dashboard)
   └── POST /v1/control/interrupt        interrupt session → Kafka
   └── GET/POST/PUT /v1/rules            policy rule management
   └── GET/POST/PUT /v1/channels         delivery channel management
+  └── GET  /v1/security/overview        tenant risk summary (band distribution, OWASP freq)
+  └── GET  /v1/security/sessions/:id/score    per-session risk score from dapplepot_security
+  └── GET  /v1/security/sessions/:id/findings security findings for a session
+  └── GET  /v1/security/remediation     top firing signals + fix guidance
+  └── GET  /v1/security/signatures      active injection signatures for tenant
 
 dapplepot_langgraph SDK
   └── GET  /v1/control/commands         SDK polls every 5s for pending commands (JSON)
 
 Reads from:
-  ├── Postgres     (sessions, agents, alerts, policy_rules, channels, alert_deliveries)
+  ├── Postgres     (sessions, agents, alerts, policy_rules, channels, alert_deliveries,
+  │                 session_risk_scores, security_findings, injection_signatures)
   └── ClickHouse   (obs_events, obs_llm_hourly, obs_error_hourly, obs_session_tokens)
 
 Writes to:
@@ -106,6 +112,7 @@ dapplepot_api/
     ├── env.ts                      ← zod-validated env vars
     │
     ├── types/                      ← exported as @dapplepot/types for dapplepot_ui
+    │   ├── index.ts                ← barrel re-export of all type modules
     │   ├── session.ts              ← SessionStatus, SessionSummary, SessionDetail,
     │   │                              TraceEvent, TracePage, StateHistoryEvent, StateHistory
     │   ├── alert.ts                ← AlertSummary, AlertDetail, AlertStatus, AlertStats,
@@ -115,7 +122,9 @@ dapplepot_api/
     │   ├── rule.ts                 ← PolicyRule, RuleType, EvalType
     │   ├── channel.ts              ← DeliveryChannel, ChannelType, ChannelConfig,
     │   │                              WebhookConfig, SlackConfig, PagerdutyConfig
-    │   └── common.ts               ← Paginated<T>, ApiError, ListParams
+    │   ├── common.ts               ← Paginated<T>, ApiError, ListParams
+    │   └── security.ts             ← RiskBand, SessionRiskScore, SecurityFinding,
+    │                                  SecurityOverview, RemediationCard  (Zone 6)
     │
     ├── lib/                        ← infra clients
     │   ├── postgres.ts             ← postgres.js pool + queryRow/queryRows/queryValue
@@ -135,7 +144,8 @@ dapplepot_api/
     │   ├── analytics.ch.ts         ← all aggregate table queries
     │   ├── alerts.pg.ts            ← alert feed, detail, stats, status update
     │   ├── rules.pg.ts             ← rule CRUD + dry-run
-    │   └── channels.pg.ts          ← channel CRUD
+    │   ├── channels.pg.ts          ← channel CRUD
+    │   └── security.pg.ts          ← overview, session score, findings, remediation stats (Zone 6)
     │
     ├── stitchers/                  ← combines PG + CH results, no HTTP
     │   ├── session-detail.ts       ← Promise.all([pgRow, chTokens, chStats])
@@ -148,7 +158,8 @@ dapplepot_api/
         ├── alerts.ts               ← 4 alert endpoints
         ├── control.ts              ← kill-switch, interrupt, SDK command poll
         ├── rules.ts                ← GET/POST/PUT rules
-        └── channels.ts             ← GET/POST/PUT channels
+        ├── channels.ts             ← GET/POST/PUT channels
+        └── security.ts             ← 5 security endpoints (Zone 6)
 ```
 
 ---
@@ -486,6 +497,60 @@ Side effects: same three-step cache invalidation as POST
 
 ---
 
+### Security
+
+Data written by `dapplepot_security` (Zone 6). This service reads and serves
+the results — it does not run any detection or scoring itself.
+
+#### `GET /v1/security/overview`
+
+```
+Query params:
+  windowHours  number   default 168 (7 days)
+
+Response: SecurityOverview
+  window, sessionsScored, highCriticalCount, avgRiskScore,
+  topSignalId, topSignalCount, bandDistribution, owaspFrequency,
+  highRiskSessions (top 5 by risk score)
+Cache: 120s per tenant+window
+```
+
+#### `GET /v1/security/sessions/:id/score`
+
+```
+Response: SessionRiskScore   — riskScore (0–100), riskBand, signalIds, scorerVersion, scoredAt
+          404 { error: { code: 'NOT_FOUND' } } if scorer has not yet processed this session
+Cache: 300s — scores are immutable once written by the scorer
+```
+
+#### `GET /v1/security/sessions/:id/findings`
+
+```
+Response: { findings: SecurityFinding[] }
+  Each finding: findingId, signalId, sigType, owaspId, severity,
+                matchedText (redacted), detail, scoreContrib, detectionPhase
+```
+
+#### `GET /v1/security/remediation`
+
+```
+Query params:
+  windowHours  number   default 168
+
+Response: { remediation: RemediationCard[] }
+  Top 10 firing signals with title, description, fixSteps, optional sdkSnippet
+Cache: 300s per tenant+window
+```
+
+#### `GET /v1/security/signatures`
+
+```
+Response: { signatures: InjectionSignature[] }
+  Active injection signatures for this tenant (tenant-specific + platform-wide)
+```
+
+---
+
 ### Channels
 
 #### `GET /v1/channels`
@@ -530,6 +595,10 @@ share Redis DB 0 — key collision is prevented by namespace prefix only.
 | `GET /v1/sessions/:id/trace` (finalised) | CDN 300s | Immutable |
 | `GET /v1/rules` | 60s | Invalidated on PUT /v1/rules/:id |
 | `GET /v1/alerts` | no cache | Always live |
+| `GET /v1/security/overview` | 120s | Per tenant+window |
+| `GET /v1/security/sessions/:id/score` | 300s | Immutable once scored |
+| `GET /v1/security/remediation` | 300s | Per tenant+window |
+| `GET /v1/security/signatures` | no cache | Always live |
 
 ---
 
@@ -557,6 +626,12 @@ To share with `dapplepot_ui` without an npm publish step, use a path alias:
 The UI then imports directly:
 ```typescript
 import type { SessionDetail, TracePage, OverviewMetrics } from '@dapplepot/types/session'
+import type { SecurityOverview, SessionRiskScore, RemediationCard } from '@dapplepot/types/security'
+```
+
+Or via the barrel:
+```typescript
+import type { SessionDetail, SecurityOverview } from '@dapplepot/types'
 ```
 
 ---
@@ -575,6 +650,9 @@ import type { SessionDetail, TracePage, OverviewMetrics } from '@dapplepot/types
 | `alerts` | Alerts endpoints (also writes `status`, `resolved_at`) |
 | `alert_deliveries` | Alert detail (delivery attempt history) |
 | `channels` | Channels endpoints (API-owned table) |
+| `session_risk_scores` | Security score endpoints (written by `dapplepot_security`) |
+| `security_findings` | Findings + remediation endpoints (written by `dapplepot_security`) |
+| `injection_signatures` | Signatures endpoint (platform + tenant-specific rules) |
 
 ### ClickHouse tables
 

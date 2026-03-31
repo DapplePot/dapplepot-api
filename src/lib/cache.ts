@@ -1,5 +1,11 @@
 import { redis } from './redis.js'
 
+// Security scores are stable once written (scorer runs once post-session)
+// Re-scoring on scorer update would replace the row, which invalidates automatically
+export const CACHE_TTL_SECURITY_OVERVIEW  = 120   // 2 minutes
+export const CACHE_TTL_SESSION_SCORE      = 300   // 5 minutes — stable once written
+export const CACHE_TTL_REMEDIATION        = 300   // 5 minutes
+
 export async function cached<T>(
   key: string,
   ttlSeconds: number,
