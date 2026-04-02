@@ -1,9 +1,10 @@
+import 'dotenv/config'
 import { z } from 'zod'
 
 const envSchema = z.object({
   POSTGRES_URL: z.string().url(),
-  CLICKHOUSE_URL: z.string().url(),
-  CLICKHOUSE_DB: z.string().default('dapplepot_pipeline'),
+  CLICKHOUSE_HOST: z.string().min(1),
+  CLICKHOUSE_PORT: z.coerce.number().default(8443),
   CLICKHOUSE_USER: z.string().default('dapplepot'),
   CLICKHOUSE_PASSWORD: z.string().default('dapplepot'),
   REDIS_URL: z.string().url(),

@@ -2,8 +2,7 @@ import { createClient } from '@clickhouse/client'
 import { env } from '../env.js'
 
 export const clickhouse = createClient({
-  url: env.CLICKHOUSE_URL,
-  database: env.CLICKHOUSE_DB,
+  url: `https://${env.CLICKHOUSE_HOST}:${env.CLICKHOUSE_PORT}`,
   username: env.CLICKHOUSE_USER,
   password: env.CLICKHOUSE_PASSWORD,
   clickhouse_settings: {
@@ -17,7 +16,7 @@ export async function chQuery<T extends Record<string, unknown>>(
 ): Promise<T[]> {
   const result = await clickhouse.query({
     query,
-    query_params: params,
+    ...(params !== undefined ? { query_params: params } : {}),
     format: 'JSONEachRow',
   })
   return result.json<T>()

@@ -3,7 +3,7 @@ import type { SessionSummary } from '../types/session.js'
 import type { AlertSummary } from '../types/alert.js'
 import type { SessionListParams } from '../types/common.js'
 
-interface RawSession {
+interface RawSession extends Record<string, unknown> {
   session_id: string
   status: string
   agent_id: string | null
@@ -20,7 +20,7 @@ interface RawSession {
 
 // Separate type for detail — does not extend RawSession because SELECT s.*
 // does not include the computed alert_count column.
-interface RawSessionDetail {
+interface RawSessionDetail extends Record<string, unknown> {
   session_id: string
   status: string
   agent_id: string | null

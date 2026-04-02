@@ -110,11 +110,10 @@ export async function getAlertDetail(
 
   const deliveries = await queryRows<Record<string, unknown>>(
     `SELECT
-      ad.delivery_id, ad.channel_id, c.name AS channel_name,
+      ad.delivery_id, ad.channel AS channel_id, ad.channel AS channel_name,
       ad.status, ad.attempt_count, ad.last_attempted_at,
       ad.delivered_at, ad.error_message
     FROM alert_deliveries ad
-    LEFT JOIN channels c ON c.channel_id = ad.channel_id
     WHERE ad.alert_id = $1
     ORDER BY ad.last_attempted_at DESC`,
     [alertId]

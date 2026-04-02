@@ -32,12 +32,12 @@ alertsRouter.get('/', async (c) => {
   const { alerts, total } = await getAlertList(tenantId, {
     page: q['page'] ? Number(q['page']) : 1,
     limit: q['limit'] ? Number(q['limit']) : 20,
-    severity: q['severity'] as 'info' | 'warning' | 'medium' | 'critical' | undefined,
-    status: q['status'] as 'open' | 'acknowledged' | 'resolved' | undefined,
-    ruleId: q['ruleId'],
-    agentId: q['agentId'],
-    since: q['since'],
-    until: q['until'],
+    ...(q['severity'] ? { severity: q['severity'] as 'info' | 'warning' | 'medium' | 'critical' } : {}),
+    ...(q['status']   ? { status: q['status'] as 'open' | 'acknowledged' | 'resolved' }           : {}),
+    ...(q['ruleId']   ? { ruleId: q['ruleId'] }   : {}),
+    ...(q['agentId']  ? { agentId: q['agentId'] } : {}),
+    ...(q['since']    ? { since: q['since'] }     : {}),
+    ...(q['until']    ? { until: q['until'] }     : {}),
   })
 
   const limit = Math.min(q['limit'] ? Number(q['limit']) : 20, 100)

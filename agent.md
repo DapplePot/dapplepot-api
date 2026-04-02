@@ -73,16 +73,21 @@ dapplepot_api/
 ├── README.md                           ← human setup guide
 ├── package.json                        ← pnpm deps, scripts
 ├── pnpm-lock.yaml
-├── tsconfig.json                       ← strict TypeScript config
-├── tsconfig.build.json                 ← excludes tests, for dist/
+├── tsconfig.json                       ← strict TypeScript config; no rootDir (includes src, tests, scripts)
+├── tsconfig.build.json                 ← rootDir=src, excludes tests + scripts, for dist/
 ├── .env.example                        ← copy to .env
 ├── .eslintrc.json
 ├── vitest.config.ts
 │
+│   # Migration runner
+├── scripts/
+│   └── migrate.ts                      ← Node.js migration runner (uses dotenv + postgres.js, no psql needed)
+│
 │   # Application entry
 ├── src/
-│   ├── index.ts                        ← Hono app factory, lifespan, middleware wiring
-│   ├── env.ts                          ← zod-validated env vars (import everywhere)
+│   ├── index.ts                        ← server entry only: serve() + SIGTERM handler
+│   ├── app.ts                          ← Hono app factory, middleware wiring, error handlers (import in tests)
+│   ├── env.ts                          ← zod-validated env vars; loads dotenv/config at module init
 │   │
 │   │   # Shared types — exported as @dapplepot/types for dapplepot_ui to import
 │   ├── types/
@@ -138,12 +143,19 @@ dapplepot_api/
 │
 │   # Tests
 └── tests/
-    ├── setup.ts                        ← vitest globalSetup: test DB connections
+    ├── setup.ts                        ← vitest globalSetup: env var defaults for test runs
     ├── unit/                           ← pure logic, no infra
     │   ├── session-stitch.test.ts
     │   ├── analytics-transform.test.ts
     │   └── rule-validation.test.ts
-    └── integration/                    ← requires docker compose up (same compose as pipeline)
+    └── integration/                    ← hits real infra via .env; uses app.ts directly (no server start)
+        ├── health.test.ts
+        ├── auth.test.ts
+        ├── sessions.test.ts
+        ├── alerts.test.ts
+        ├── analytics.test.ts
+        ├── rules.test.ts
+        └── not-found.test.ts
         ├── sessions.test.ts
         ├── analytics.test.ts
         ├── alerts.test.ts
@@ -499,18 +511,17 @@ ORDER BY error_rate DESC
 
 ### Cost attribution (`/v1/analytics/cost`)
 
+`obs_session_tokens` has no `agent_id` or `day` column — returns a single aggregate row.
+
 ```sql
 SELECT
-  agent_id,
-  sum(total_input_tok)                       AS input_tokens,
-  sum(total_output_tok)                      AS output_tokens,
-  sum(total_input_tok + total_output_tok)    AS total_tokens
+  sum(input_tokens)  AS input_tokens,
+  sum(output_tokens) AS output_tokens,
+  sum(total_tokens)  AS total_tokens
 FROM obs_session_tokens
 FINAL
 WHERE tenant_id = {tenantId: String}
-  AND day >= today() - {days: UInt32}
-GROUP BY agent_id
-ORDER BY total_tokens DESC
+  AND toDate(created_at) >= today() - {days: UInt32}
 ```
 
 Cost estimate computed in the route handler (not in SQL):
@@ -754,7 +765,7 @@ async function dryRunCumulativeCost(
   const rows = await clickhouse.query(`
     SELECT
       session_id,
-      sum(total_input_tok + total_output_tok) AS value
+      sum(total_tokens) AS value
     FROM obs_session_tokens
     FINAL
     WHERE tenant_id = {tenantId: String}
@@ -763,7 +774,7 @@ async function dryRunCumulativeCost(
             WHERE tenant_id = {tenantId: String}
               AND agent_id  = {agentId: String}
           ))
-      AND day >= today() - 7
+      AND toDate(created_at) >= today() - 7
     GROUP BY session_id
     HAVING value > {threshold: Float64}
     ORDER BY value DESC
@@ -1289,9 +1300,10 @@ HTTP status codes:
 # Postgres (same DB as dapplepot_pipeline writes to)
 POSTGRES_URL=postgresql://dapplepot:dapplepot@localhost:5432/dapplepot_pipeline
 
-# ClickHouse (same instance)
-CLICKHOUSE_URL=http://localhost:8123
-CLICKHOUSE_DB=dapplepot_pipeline
+# ClickHouse — combined at runtime as `https://${CLICKHOUSE_HOST}:${CLICKHOUSE_PORT}`
+# CLICKHOUSE_HOST: hostname only, no scheme (e.g. abc.ap-south-1.aws.clickhouse.cloud)
+CLICKHOUSE_HOST=your-host.clickhouse.cloud
+CLICKHOUSE_PORT=8443
 CLICKHOUSE_USER=dapplepot
 CLICKHOUSE_PASSWORD=dapplepot
 
@@ -1757,57 +1769,63 @@ RETURNING channel_id, tenant_id, name, channel_type, enabled, config, created_at
 These are the confirmed column lists for the three aggregate tables used by analytics
 queries. The pipeline creates and populates them — the API only reads with `FINAL`.
 
-### `obs_llm_hourly` (AggregatingMergeTree)
+### `obs_llm_hourly` (AggregatingMergeTree) — actual schema
 
 ```sql
 CREATE TABLE obs_llm_hourly (
-  tenant_id         LowCardinality(String),
-  agent_id          LowCardinality(String),
-  llm_model         LowCardinality(String),
-  hour              DateTime,
-  llm_call_count    UInt64,
-  total_input_tok   UInt64,
-  total_output_tok  UInt64,
-  avg_latency_state AggregateFunction(avg, Float64),
-  p95_latency_state AggregateFunction(quantile(0.95), Float64)
+  tenant_id        LowCardinality(String),
+  agent_id         LowCardinality(String),
+  llm_model        LowCardinality(String),
+  hour             DateTime,
+  input_tokens_sum AggregateFunction(sum, UInt64),
+  output_tokens_sum AggregateFunction(sum, UInt64),
+  latency_avg      AggregateFunction(avg, Float64),
+  latency_p95      AggregateFunction(quantile(0.95), Float64),
+  call_count       AggregateFunction(count, UInt8)
 ) ENGINE = AggregatingMergeTree()
   ORDER BY (tenant_id, agent_id, llm_model, hour);
 
--- Read with:
---   avgMerge(avg_latency_state)            → avg latency ms
---   quantileMerge(0.95)(p95_latency_state) → p95 latency ms
---   Always add FINAL to force dedup of unmerged parts
+-- Read with (always add FINAL):
+--   sumMerge(input_tokens_sum)       → total input tokens
+--   sumMerge(output_tokens_sum)      → total output tokens
+--   avgMerge(latency_avg)            → avg latency ms
+--   quantileMerge(0.95)(latency_p95) → p95 latency ms
+--   countMerge(call_count)           → total LLM calls
 ```
 
-### `obs_error_hourly` (SummingMergeTree)
+### `obs_error_hourly` (SummingMergeTree) — actual schema
 
 ```sql
 CREATE TABLE obs_error_hourly (
   tenant_id   LowCardinality(String),
   agent_id    LowCardinality(String),
   node_name   LowCardinality(String),
+  event_type  LowCardinality(String),
   hour        DateTime,
   error_count UInt64,
   total_count UInt64
 ) ENGINE = SummingMergeTree((error_count, total_count))
   ORDER BY (tenant_id, agent_id, node_name, hour);
 
--- Read with FINAL; compute error_rate = error_count / total_count in application layer
+-- Read with FINAL; use aliased sums (e.g. AS err_count) to avoid alias/column name conflicts
+-- Compute error_rate = sum(error_count) / sum(total_count) in the SELECT
 ```
 
-### `obs_session_tokens` (SummingMergeTree)
+### `obs_session_tokens` (SummingMergeTree) — actual schema
 
 ```sql
 CREATE TABLE obs_session_tokens (
-  tenant_id        LowCardinality(String),
-  session_id       UUID,
-  agent_id         LowCardinality(String),
-  day              Date,
-  total_input_tok  UInt64,
-  total_output_tok UInt64,
-  llm_call_count   UInt64
-) ENGINE = SummingMergeTree((total_input_tok, total_output_tok, llm_call_count))
-  ORDER BY (tenant_id, agent_id, session_id, day);
+  tenant_id    LowCardinality(String),
+  session_id   UUID,
+  input_tokens  UInt64,
+  output_tokens UInt64,
+  total_tokens  UInt64,
+  created_at   DateTime DEFAULT now()
+) ENGINE = SummingMergeTree((input_tokens, output_tokens, total_tokens))
+  ORDER BY (tenant_id, session_id);
+
+-- No agent_id or day column — filter by toDate(created_at) for date ranges
+-- token totals query returns tok_in / tok_out aliases to avoid column name conflicts
 ```
 
 ---
@@ -1817,6 +1835,18 @@ CREATE TABLE obs_session_tokens (
 Run these once against the shared Postgres instance **before** starting this service.
 The pipeline has already created the base tables — these add API-managed columns
 and the `channels` table which the pipeline does not create.
+
+Use the built-in migration runner (no `psql` required):
+
+```bash
+pnpm migrate
+```
+
+- Reads `POSTGRES_URL` from `.env` via `dotenv/config`
+- Connects with `ssl: 'require'` (required for Aiven/cloud Postgres)
+- Tracks applied files in a `_migrations` table
+- Runs each `.sql` file in `migrations/` in filename order
+- Idempotent — safe to re-run
 
 ```sql
 -- migrations/001_api_alerts_columns.sql
@@ -1835,7 +1865,7 @@ CREATE INDEX IF NOT EXISTS idx_alerts_triggered_tenant
 ```sql
 -- migrations/002_channels_table.sql
 -- Delivery channel config table — owned entirely by dapplepot_api.
--- The pipeline references channel_id in alert_deliveries but does not create this table.
+-- alert_deliveries.channel is a plain text column (e.g. 'webhook', 'slack') — not a FK to this table.
 CREATE TABLE IF NOT EXISTS channels (
   channel_id   UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
   tenant_id    UUID        NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
@@ -1862,21 +1892,22 @@ Run order: `001` before `002`. Both are idempotent (`IF NOT EXISTS` / `IF NOT EX
 - Analytics transforms handle empty time windows
 - Rule condition validation rejects invalid configs
 
-**Integration tests pass** (`pnpm test:integration`, docker compose up):
-- `GET /v1/sessions` returns paginated list filtered by status/agent
-- `GET /v1/sessions/:id` returns stitched PG + CH response within 100ms
-- `GET /v1/sessions/:id/trace` returns events in sequence_index order, cursor works
-- `GET /v1/analytics/overview` reads from aggregate tables, not raw events
-- `POST /v1/control/kill-switch` pushes `terminate_session` to `dp:commands:{agentId}` and produces to `obs.priority.v1`
-- `GET /v1/control/commands?agent_id=X` returns queued commands as JSON and consumes them (LPOP)
-- `GET /v1/sessions/live` (SSE) receives events within 2.5s of session open in PG
-- `PUT /v1/alerts/:id/status` updates status and invalidates any related caches
-- `PUT /v1/rules/:id` bumps version, DELs both rule caches, PUBLISHes invalidation
-- `GET /v1/security/overview` returns `SecurityOverview` with correct band distribution and OWASP frequency counts
-- `GET /v1/security/sessions/:id/score` returns `SessionRiskScore` when scored, 404 with `NOT_FOUND` code when scorer hasn't run yet
-- `GET /v1/security/sessions/:id/findings` returns `{ findings: SecurityFinding[] }` — redacted `matchedText`
-- `GET /v1/security/remediation` returns `{ remediation: RemediationCard[] }` — top 10 signals, cache key includes tenant + window
-- `GET /v1/security/signatures` returns `{ signatures: InjectionSignature[] }` — both platform-wide (`tenant_id IS NULL`) and tenant-specific
+**Integration tests pass** (`pnpm test:integration`, requires real infra via `.env`):
+
+Integration tests import `src/app.ts` directly and call `app.request()` — no server is started.
+The `src/index.ts` entry point is only used for production (`pnpm dev` / `pnpm start`).
+
+- `GET /health` returns 200 with `postgres`, `clickhouse`, `redis` status fields
+- Missing/invalid JWT → 401 with `UNAUTHORIZED` error code
+- `GET /v1/sessions` returns `{ data, total, page, perPage, totalPages }` shape
+- `GET /v1/sessions/:id` with unknown UUID → 404
+- `GET /v1/alerts` returns paginated shape
+- `GET /v1/alerts/stats` returns stats with `window` field
+- `PUT /v1/alerts/:id/status` with invalid status value → 400
+- `GET /v1/analytics/*` all return 200 (empty arrays for tenants with no data)
+- `GET /v1/rules` returns an array
+- `PUT /v1/rules/:id` with unknown UUID → 404
+- Unknown routes → 404 with `NOT_FOUND` error code
 
 ---
 

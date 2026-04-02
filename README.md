@@ -105,9 +105,13 @@ dapplepot_api/
 ├── .env.example
 ├── vitest.config.ts
 │
+├── scripts/
+│   └── migrate.ts                  ← Node.js migration runner (no psql needed)
+│
 └── src/
-    ├── index.ts                    ← Hono app, lifespan, middleware
-    ├── env.ts                      ← zod-validated env vars
+    ├── index.ts                    ← server entry: serve() + SIGTERM handler
+    ├── app.ts                      ← Hono app, middleware, routes, error handlers
+    ├── env.ts                      ← zod-validated env vars (dotenv loaded here)
     │
     ├── types/                      ← exported as @dapplepot/types for dapplepot_ui
     │   ├── index.ts                ← barrel re-export of all type modules
@@ -185,8 +189,18 @@ pnpm install
 
 ```bash
 cp .env.example .env
-# defaults work against the dapplepot_pipeline docker compose setup
+# Edit .env with your actual connection strings
 ```
+
+Key variables:
+
+| Variable | Example | Notes |
+|----------|---------|-------|
+| `POSTGRES_URL` | `postgresql://user:pass@host/db` | Aiven/cloud — SSL required |
+| `CLICKHOUSE_HOST` | `abc.clickhouse.cloud` | Hostname only, no `https://` |
+| `CLICKHOUSE_PORT` | `8443` | Default for ClickHouse Cloud |
+| `REDIS_URL` | `redis://localhost:6379` | |
+| `DAPPLEPOT_JWT_SECRET` | `changeme` | Min 1 char |
 
 ### 3. Run schema migrations
 
@@ -194,13 +208,11 @@ These run once against the shared Postgres instance. The pipeline has already
 created the base tables — these add API-managed columns and the `channels` table.
 
 ```bash
-# From the dapplepot_pipeline docker compose environment:
-psql postgresql://dapplepot:dapplepot@localhost:5432/dapplepot_pipeline \
-  -f migrations/001_api_alerts_columns.sql \
-  -f migrations/002_channels_table.sql
+pnpm migrate
 ```
 
-Both files are idempotent (`IF NOT EXISTS`) — safe to re-run.
+Reads `POSTGRES_URL` from `.env`, connects over SSL, and tracks applied files in
+a `_migrations` table. Both files are idempotent — safe to re-run.
 
 ### 4. Start
 
@@ -679,6 +691,7 @@ pnpm test:integration   # vitest run tests/integration/ (requires docker compose
 pnpm typecheck          # tsc --noEmit
 pnpm lint               # eslint src/ tests/
 pnpm lint:fix           # eslint --fix
+pnpm migrate            # run SQL migrations from migrations/ against POSTGRES_URL in .env
 ```
 
 ---

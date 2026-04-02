@@ -5,13 +5,15 @@ const sql = postgres(env.POSTGRES_URL, {
   max: 20,
   idle_timeout: 30,
   connect_timeout: 10,
+  ssl: 'require',
 })
 
 export async function queryRow<T extends Record<string, unknown>>(
   query: string,
   params: unknown[] = []
 ): Promise<T | undefined> {
-  const rows = await sql.unsafe(query, params as postgres.ParameterOrFragment<never>[])
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = await sql.unsafe(query, params as any[])
   return rows[0] as T | undefined
 }
 
@@ -19,15 +21,17 @@ export async function queryRows<T extends Record<string, unknown>>(
   query: string,
   params: unknown[] = []
 ): Promise<T[]> {
-  const rows = await sql.unsafe(query, params as postgres.ParameterOrFragment<never>[])
-  return rows as T[]
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = await sql.unsafe(query, params as any[])
+  return rows as unknown as T[]
 }
 
 export async function queryValue<T>(
   query: string,
   params: unknown[] = []
 ): Promise<T | undefined> {
-  const rows = await sql.unsafe(query, params as postgres.ParameterOrFragment<never>[])
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const rows = await sql.unsafe(query, params as any[])
   if (!rows[0]) return undefined
   const firstRow = rows[0] as Record<string, unknown>
   const firstKey = Object.keys(firstRow)[0]

@@ -39,9 +39,9 @@ export async function stitchSessionDetail(
         }
       : null,
     tokenUsage: {
-      totalInputTokens: Number(chTokens?.total_input_tok ?? 0),
-      totalOutputTokens: Number(chTokens?.total_output_tok ?? 0),
-      llmCallCount: Number(chTokens?.llm_call_count ?? 0),
+      totalInputTokens: Number(chTokens?.tok_in ?? 0),
+      totalOutputTokens: Number(chTokens?.tok_out ?? 0),
+      llmCallCount: 0,
     },
     executionSummary: {
       nodeCount: Number(chStats.node_count),

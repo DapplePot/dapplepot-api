@@ -1,4 +1,5 @@
 import { chQuery, chQueryRow } from '../lib/clickhouse.js'
+import type { SessionFunnel } from '../types/analytics.js'
 import type {
   LlmUsagePoint,
   ErrorRatePoint,
@@ -31,20 +32,20 @@ export async function getLlmUsage(
   const rows = await chQuery<{
     llm_model: string
     hour: string
-    llm_call_count: number
-    total_input_tok: number
-    total_output_tok: number
+    call_count: number
+    input_tok: number
+    output_tok: number
     avg_latency_ms: number
     p95_latency_ms: number
   }>(
     `SELECT
       llm_model,
-      toStartOfHour(hour)                    AS hour,
-      sum(llm_call_count)                    AS llm_call_count,
-      sum(total_input_tok)                   AS total_input_tok,
-      sum(total_output_tok)                  AS total_output_tok,
-      avgMerge(avg_latency_state)            AS avg_latency_ms,
-      quantileMerge(0.95)(p95_latency_state) AS p95_latency_ms
+      toStartOfHour(hour)              AS hour,
+      countMerge(call_count)           AS call_count,
+      sumMerge(input_tokens_sum)       AS input_tok,
+      sumMerge(output_tokens_sum)      AS output_tok,
+      avgMerge(latency_avg)            AS avg_latency_ms,
+      quantileMerge(0.95)(latency_p95) AS p95_latency_ms
     FROM obs_llm_hourly
     FINAL
     WHERE tenant_id = {tenantId: String}
@@ -58,9 +59,9 @@ export async function getLlmUsage(
   return rows.map((r) => ({
     hour: r.hour,
     llmModel: r.llm_model,
-    llmCallCount: r.llm_call_count,
-    totalInputTok: r.total_input_tok,
-    totalOutputTok: r.total_output_tok,
+    llmCallCount: r.call_count,
+    totalInputTok: r.input_tok,
+    totalOutputTok: r.output_tok,
     avgLatencyMs: r.avg_latency_ms,
     p95LatencyMs: r.p95_latency_ms,
   }))
@@ -76,18 +77,19 @@ export async function getErrorRates(
     agent_id: string
     node_name: string
     hour: string
-    error_count: number
-    total_count: number
+    err_count: number
+    tot_count: number
     error_rate: number
   }>(
     `SELECT
       agent_id,
       node_name,
-      toStartOfHour(hour)    AS hour,
-      sum(error_count)       AS error_count,
-      sum(total_count)       AS total_count,
+      toStartOfHour(hour)                AS hour,
+      sum(error_count)                   AS err_count,
+      sum(total_count)                   AS tot_count,
       sum(error_count) / sum(total_count) AS error_rate
     FROM obs_error_hourly
+    FINAL
     WHERE tenant_id = {tenantId: String}
       AND hour >= toStartOfHour(now() - INTERVAL {hours: UInt32} HOUR)
       AND ({agentId: String} = '' OR agent_id = {agentId: String})
@@ -100,8 +102,8 @@ export async function getErrorRates(
     hour: r.hour,
     agentId: r.agent_id,
     nodeName: r.node_name,
-    errorCount: r.error_count,
-    totalCount: r.total_count,
+    errorCount: r.err_count,
+    totalCount: r.tot_count,
     errorRate: r.error_rate,
   }))
 }
@@ -120,11 +122,11 @@ export async function getLatency(
     call_count: number
   }>(
     `SELECT
-      toStartOfHour(hour)                     AS hour,
+      toStartOfHour(hour)              AS hour,
       llm_model,
-      avgMerge(avg_latency_state)             AS avg_ms,
-      quantileMerge(0.95)(p95_latency_state)  AS p95_ms,
-      sum(llm_call_count)                     AS call_count
+      avgMerge(latency_avg)            AS avg_ms,
+      quantileMerge(0.95)(latency_p95) AS p95_ms,
+      countMerge(call_count)           AS call_count
     FROM obs_llm_hourly
     FINAL
     WHERE tenant_id = {tenantId: String}
@@ -152,35 +154,32 @@ export async function getCost(
   window: string
 ): Promise<CostPoint[]> {
   const days = windowToDays(window)
-  const rows = await chQuery<{
-    agent_id: string
+  const row = await chQueryRow<{
     input_tokens: number
     output_tokens: number
     total_tokens: number
   }>(
     `SELECT
-      agent_id,
-      sum(total_input_tok)                    AS input_tokens,
-      sum(total_output_tok)                   AS output_tokens,
-      sum(total_input_tok + total_output_tok) AS total_tokens
+      sum(input_tokens)  AS input_tokens,
+      sum(output_tokens) AS output_tokens,
+      sum(total_tokens)  AS total_tokens
     FROM obs_session_tokens
     FINAL
     WHERE tenant_id = {tenantId: String}
-      AND day >= today() - {days: UInt32}
-    GROUP BY agent_id
-    ORDER BY total_tokens DESC`,
+      AND toDate(created_at) >= today() - {days: UInt32}`,
     { tenantId, days }
   )
 
-  return rows.map((r) => ({
-    agentId: r.agent_id,
-    inputTokens: r.input_tokens,
-    outputTokens: r.output_tokens,
-    totalTokens: r.total_tokens,
+  if (!row) return []
+  return [{
+    agentId: '',
+    inputTokens: row.input_tokens,
+    outputTokens: row.output_tokens,
+    totalTokens: row.total_tokens,
     estimatedCostUsd:
-      (r.input_tokens / 1_000_000) * COST_PER_M_INPUT +
-      (r.output_tokens / 1_000_000) * COST_PER_M_OUTPUT,
-  }))
+      (row.input_tokens / 1_000_000) * COST_PER_M_INPUT +
+      (row.output_tokens / 1_000_000) * COST_PER_M_OUTPUT,
+  }]
 }
 
 export async function getOverviewChMetrics(
@@ -201,11 +200,11 @@ export async function getOverviewChMetrics(
     p95_latency_ms: number
   }>(
     `SELECT
-      sum(llm_call_count)                     AS total_llm_calls,
-      sum(total_input_tok)                    AS total_input_tokens,
-      sum(total_output_tok)                   AS total_output_tokens,
-      avgMerge(avg_latency_state)             AS avg_latency_ms,
-      quantileMerge(0.95)(p95_latency_state)  AS p95_latency_ms
+      countMerge(call_count)           AS total_llm_calls,
+      sumMerge(input_tokens_sum)       AS total_input_tokens,
+      sumMerge(output_tokens_sum)      AS total_output_tokens,
+      avgMerge(latency_avg)            AS avg_latency_ms,
+      quantileMerge(0.95)(latency_p95) AS p95_latency_ms
     FROM obs_llm_hourly
     FINAL
     WHERE tenant_id = {tenantId: String}

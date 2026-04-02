@@ -1,5 +1,6 @@
 import { createMiddleware } from 'hono/factory'
-import { verify } from 'jsonwebtoken'
+import jwt from 'jsonwebtoken'
+const { verify } = jwt
 import { createHash } from 'crypto'
 import { env } from '../env.js'
 import { redis } from '../lib/redis.js'

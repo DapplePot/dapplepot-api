@@ -1,7 +1,7 @@
 import type {
   SecurityOverview, SessionRiskScore, SecurityFinding, RemediationCard
 } from '../types/security.js'
-import { db } from '../lib/postgres.js'
+import { queryRow, queryRows } from '../lib/postgres.js'
 
 export async function getSecurityOverview(
   tenantId: string,
@@ -9,10 +9,10 @@ export async function getSecurityOverview(
 ): Promise<SecurityOverview> {
   const [scored, dist, owasp, topRisk] = await Promise.all([
     // Total sessions scored in window
-    db.queryRow<{ total: number; high_critical: number; avg_score: number }>(
-      `SELECT count(*)                                  AS total,
-              countIf(risk_band IN ('high','critical')) AS high_critical,
-              avg(risk_score)                           AS avg_score
+    queryRow<{ total: number; high_critical: number; avg_score: number }>(
+      `SELECT count(*)                                                      AS total,
+              COUNT(*) FILTER (WHERE risk_band IN ('high','critical'))      AS high_critical,
+              avg(risk_score)                                               AS avg_score
        FROM session_risk_scores
        WHERE tenant_id = $1
          AND scored_at >= now() - ($2 || ' hours')::interval`,
@@ -20,7 +20,7 @@ export async function getSecurityOverview(
     ),
 
     // Band distribution
-    db.queryRows<{ risk_band: string; count: number }>(
+    queryRows<{ risk_band: string; count: number }>(
       `SELECT risk_band, count(*) AS count
        FROM session_risk_scores
        WHERE tenant_id = $1
@@ -30,7 +30,7 @@ export async function getSecurityOverview(
     ),
 
     // OWASP signal frequency (from security_findings)
-    db.queryRows<{ owasp_id: string; count: number }>(
+    queryRows<{ owasp_id: string; count: number }>(
       `SELECT owasp_id, count(*) AS count
        FROM security_findings
        WHERE tenant_id = $1
@@ -42,7 +42,7 @@ export async function getSecurityOverview(
     ),
 
     // Top 5 highest-risk sessions
-    db.queryRows<{ session_id: string; agent_id: string; risk_score: number; risk_band: string; signal_ids: string[] }>(
+    queryRows<{ session_id: string; agent_id: string; risk_score: number; risk_band: string; signal_ids: string[] }>(
       `SELECT s.session_id, a.name AS agent_id, s.risk_score, s.risk_band, s.signal_ids
        FROM session_risk_scores s
        LEFT JOIN agents a ON a.agent_id = s.agent_id
@@ -82,7 +82,7 @@ export async function getSessionScore(
   tenantId: string,
   sessionId: string
 ): Promise<SessionRiskScore | null> {
-  const row = await db.queryRow<any>(
+  const row = await queryRow<any>(
     `SELECT * FROM session_risk_scores
      WHERE session_id = $1 AND tenant_id = $2`,
     [sessionId, tenantId]
@@ -105,7 +105,7 @@ export async function getSessionFindings(
   tenantId: string,
   sessionId: string
 ): Promise<SecurityFinding[]> {
-  const rows = await db.queryRows<any>(
+  const rows = await queryRows<any>(
     `SELECT * FROM security_findings
      WHERE session_id = $1 AND tenant_id = $2
      ORDER BY created_at ASC`,
@@ -132,7 +132,7 @@ export async function getRemediationStats(
   tenantId: string,
   windowHours: number = 168
 ): Promise<RemediationCard[]> {
-  const rows = await db.queryRows<{ signal_id: string; owasp_id: string; count: number }>(
+  const rows = await queryRows<{ signal_id: string; owasp_id: string; count: number }>(
     `SELECT signal_id, owasp_id, count(*) AS count
      FROM security_findings
      WHERE tenant_id = $1

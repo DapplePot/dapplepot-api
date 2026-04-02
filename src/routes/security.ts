@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { jwtAuth } from '../middleware/auth.js'
 import { rateLimitMiddleware } from '../middleware/ratelimit.js'
-import { db } from '../lib/postgres.js'
+import { queryRows } from '../lib/postgres.js'
 import {
   cached,
   CACHE_TTL_SECURITY_OVERVIEW,
@@ -68,7 +68,7 @@ securityRouter.get('/remediation', async (c) => {
 // GET /v1/security/signatures — list tenant's injection signatures
 securityRouter.get('/signatures', async (c) => {
   const tenantId = c.get('tenantId')
-  const rows = await db.queryRows(
+  const rows = await queryRows(
     `SELECT * FROM injection_signatures
      WHERE (tenant_id = $1 OR tenant_id IS NULL) AND enabled = true
      ORDER BY created_at ASC`,

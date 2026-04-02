@@ -18,11 +18,11 @@ export async function stitchOverview(
       killed_sessions: number
     }>(
       `SELECT
-        count(*)                                    AS total_sessions,
-        countIf(status = 'open')                    AS live_sessions,
-        countIf(status = 'finalised')               AS completed_sessions,
-        countIf(status = 'error')                   AS error_sessions,
-        countIf(status = 'killed')                  AS killed_sessions
+        COUNT(*)                                                  AS total_sessions,
+        COUNT(*) FILTER (WHERE status = 'open')                   AS live_sessions,
+        COUNT(*) FILTER (WHERE status = 'finalised')              AS completed_sessions,
+        COUNT(*) FILTER (WHERE status = 'error')                  AS error_sessions,
+        COUNT(*) FILTER (WHERE status = 'killed')                 AS killed_sessions
       FROM sessions
       WHERE tenant_id  = $1
         AND started_at >= now() - $2::interval`,

@@ -32,12 +32,12 @@ sessionsRouter.get('/', async (c) => {
   const { sessions, total } = await getSessionList(tenantId, {
     page: q['page'] ? Number(q['page']) : 1,
     limit: q['limit'] ? Number(q['limit']) : 20,
-    status: q['status'],
-    agentId: q['agentId'],
-    environment: q['environment'],
-    since: q['since'],
-    until: q['until'],
-    q: q['q'],
+    ...(q['status']      ? { status: q['status'] }           : {}),
+    ...(q['agentId']     ? { agentId: q['agentId'] }         : {}),
+    ...(q['environment'] ? { environment: q['environment'] } : {}),
+    ...(q['since']       ? { since: q['since'] }             : {}),
+    ...(q['until']       ? { until: q['until'] }             : {}),
+    ...(q['q']           ? { q: q['q'] }                     : {}),
   })
 
   const limit = Math.min(q['limit'] ? Number(q['limit']) : 20, 100)

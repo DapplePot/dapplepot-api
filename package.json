@@ -12,30 +12,32 @@
     "test:integration": "vitest run tests/integration/",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src/ tests/",
-    "lint:fix": "eslint --fix src/ tests/"
+    "lint:fix": "eslint --fix src/ tests/",
+    "migrate": "tsx scripts/migrate.ts"
   },
   "dependencies": {
     "@clickhouse/client": "^1.4.0",
+    "@hono/node-server": "^1.13.0",
+    "@types/jsonwebtoken": "^9.0.0",
+    "dotenv": "^17.4.0",
     "hono": "^4.4.0",
     "ioredis": "^5.3.0",
+    "jsonwebtoken": "^9.0.0",
     "kafkajs": "^2.2.0",
     "postgres": "^3.4.0",
-    "zod": "^3.23.0",
-    "@hono/node-server": "^1.13.0",
-    "jsonwebtoken": "^9.0.0",
-    "@types/jsonwebtoken": "^9.0.0"
+    "zod": "^3.23.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
-    "typescript": "^5.5.0",
-    "tsx": "^4.15.0",
-    "vitest": "^1.6.0",
-    "@vitest/coverage-v8": "^1.6.0",
-    "eslint": "^9.0.0",
+    "@types/supertest": "^6.0.0",
     "@typescript-eslint/eslint-plugin": "^7.0.0",
     "@typescript-eslint/parser": "^7.0.0",
+    "@vitest/coverage-v8": "^1.6.0",
+    "eslint": "^9.0.0",
     "supertest": "^7.0.0",
-    "@types/supertest": "^6.0.0"
+    "tsx": "^4.15.0",
+    "typescript": "^5.5.0",
+    "vitest": "^1.6.0"
   },
   "engines": {
     "node": ">=22"

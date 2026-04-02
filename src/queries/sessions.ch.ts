@@ -1,13 +1,12 @@
 import { chQuery, chQueryRow } from '../lib/clickhouse.js'
 import type { TraceEvent, TracePage, StateHistory, StateHistoryEvent } from '../types/session.js'
 
-interface TokenTotals {
-  total_input_tok: number
-  total_output_tok: number
-  llm_call_count: number
+interface TokenTotals extends Record<string, unknown> {
+  tok_in: number
+  tok_out: number
 }
 
-interface EventStats {
+interface EventStats extends Record<string, unknown> {
   node_count: number
   error_count: number
   tool_calls: number
@@ -22,9 +21,8 @@ export async function getSessionTokens(
 ): Promise<TokenTotals | undefined> {
   return chQueryRow<TokenTotals>(
     `SELECT
-      sum(total_input_tok)  AS total_input_tok,
-      sum(total_output_tok) AS total_output_tok,
-      sum(llm_call_count)   AS llm_call_count
+      sum(input_tokens)  AS tok_in,
+      sum(output_tokens) AS tok_out
     FROM obs_session_tokens
     FINAL
     WHERE tenant_id  = {tenantId: String}
