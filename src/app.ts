@@ -6,7 +6,7 @@ import { checkClickHouse } from './lib/clickhouse.js'
 import { checkRedis } from './lib/redis.js'
 import { NotFoundError, BadRequestError, UnauthorizedError, ForbiddenError } from './types/common.js'
 
-type Variables = { tenantId: string; userId: string }
+type Variables = { tenantId: string; userId: string; role: string }
 
 const app = new Hono<{ Variables: Variables }>()
 

@@ -5,3 +5,4 @@ export * from './rule.js'
 export * from './channel.js'
 export * from './common.js'
 export * from './security.js'   // ← added for Zone 6
+export * from './auth.js'

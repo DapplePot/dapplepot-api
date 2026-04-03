@@ -1,0 +1,95 @@
+import type { EmailMessage } from './index.js'
+
+export function inviteEmail(params: {
+    appUrl: string
+    token: string
+    tenantName: string
+    inviterName: string
+    role: string
+}): EmailMessage {
+    const link = `${params.appUrl}/accept-invite?token=${params.token}`
+    const text = [
+        `You've been invited to join ${params.tenantName} on DapplePot.`,
+        ``,
+        `Invited by: ${params.inviterName}`,
+        `Your role:  ${params.role}`,
+        ``,
+        `Accept your invitation here:`,
+        link,
+        ``,
+        `This link expires in 7 days.`,
+        `If you did not expect this invitation, you can safely ignore this email.`,
+    ].join('\n')
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
+  <h2 style="margin-bottom:4px">You've been invited to DapplePot</h2>
+  <p style="color:#555;margin-top:0">${params.tenantName}</p>
+  <p>
+    <strong>${params.inviterName}</strong> has invited you to join as
+    <strong>${params.role}</strong>.
+  </p>
+  <p style="margin:32px 0">
+    <a href="${link}"
+       style="background:#6366f1;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600">
+      Accept Invitation
+    </a>
+  </p>
+  <p style="color:#888;font-size:13px">This link expires in 7 days.</p>
+  <p style="color:#888;font-size:13px">If you did not expect this, you can safely ignore this email.</p>
+</body>
+</html>`
+
+    return {
+        to: '',
+        subject: `You've been invited to ${params.tenantName} on DapplePot`,
+        html,
+        text,
+    }
+}
+
+export function resetEmail(params: {
+    appUrl: string
+    token: string
+    userName: string
+}): EmailMessage {
+    const link = `${params.appUrl}/reset-password?token=${params.token}`
+    const text = [
+        `Hi ${params.userName},`,
+        ``,
+        `You requested a password reset for your DapplePot account.`,
+        ``,
+        `Reset your password here:`,
+        link,
+        ``,
+        `This link expires in 1 hour.`,
+        `If you did not request this, you can safely ignore this email.`,
+    ].join('\n')
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
+  <h2>Reset your DapplePot password</h2>
+  <p>Hi ${params.userName},</p>
+  <p>You requested a password reset. Click the button below to choose a new password.</p>
+  <p style="margin:32px 0">
+    <a href="${link}"
+       style="background:#6366f1;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600">
+      Reset Password
+    </a>
+  </p>
+  <p style="color:#888;font-size:13px">This link expires in 1 hour.</p>
+  <p style="color:#888;font-size:13px">If you did not request this, you can safely ignore this email.</p>
+</body>
+</html>`
+
+    return {
+        to: '',
+        subject: 'Reset your DapplePot password',
+        html,
+        text,
+    }
+}

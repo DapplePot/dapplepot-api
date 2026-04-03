@@ -9,6 +9,7 @@ import { queryRow } from '../lib/postgres.js'
 type Variables = {
   tenantId: string
   userId: string
+  role: string
 }
 
 export const jwtAuth = createMiddleware<{ Variables: Variables }>(async (c, next) => {
@@ -25,9 +26,15 @@ export const jwtAuth = createMiddleware<{ Variables: Variables }>(async (c, next
     const payload = verify(token, env.DAPPLEPOT_JWT_SECRET) as {
       tenant_id: string
       user_id: string
+      role?: string
+      type?: string
+    }
+    if (payload.type !== undefined && payload.type !== 'access') {
+      return c.json({ error: { code: 'UNAUTHORIZED', message: 'Invalid token type' } }, 401)
     }
     c.set('tenantId', payload.tenant_id)
     c.set('userId', payload.user_id)
+    c.set('role', payload.role ?? 'viewer')
     await next()
   } catch {
     return c.json({ error: { code: 'UNAUTHORIZED', message: 'Invalid or expired JWT' } }, 401)

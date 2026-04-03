@@ -6,10 +6,14 @@ import { controlRouter } from './control.js'
 import { rulesRouter } from './rules.js'
 import { channelsRouter } from './channels.js'
 import { securityRouter } from './security.js'
+import { authRouter } from './auth.js'
+import { usersRouter } from './users.js'
 
-type Variables = { tenantId: string; userId: string }
+type Variables = { tenantId: string; userId: string; role: string }
 
 export function mountRoutes(app: Hono<{ Variables: Variables }>) {
+  app.route('/v1/auth', authRouter)
+  app.route('/v1/users', usersRouter)
   app.route('/v1/sessions', sessionsRouter)
   app.route('/v1/analytics', analyticsRouter)
   app.route('/v1/alerts', alertsRouter)

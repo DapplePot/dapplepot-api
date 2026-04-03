@@ -96,7 +96,7 @@ only integration points between the two services.
 
 ```
 dapplepot_api/
-├── agent.md                        ← full IDE agent context (read before coding)
+├── AGENT.md                        ← full IDE agent context (read before coding)
 ├── README.md                       ← this file
 ├── package.json
 ├── pnpm-lock.yaml
@@ -106,7 +106,8 @@ dapplepot_api/
 ├── vitest.config.ts
 │
 ├── scripts/
-│   └── migrate.ts                  ← Node.js migration runner (no psql needed)
+│   ├── migrate.ts                  ← Node.js migration runner (no psql needed)
+│   └── seed_admin.ts               ← seeds default admin user for dev tenant
 │
 └── src/
     ├── index.ts                    ← server entry: serve() + SIGTERM handler
@@ -115,28 +116,32 @@ dapplepot_api/
     │
     ├── types/                      ← exported as @dapplepot/types for dapplepot_ui
     │   ├── index.ts                ← barrel re-export of all type modules
-    │   ├── session.ts              ← SessionStatus, SessionSummary, SessionDetail,
-    │   │                              TraceEvent, TracePage, StateHistoryEvent, StateHistory
-    │   ├── alert.ts                ← AlertSummary, AlertDetail, AlertStatus, AlertStats,
-    │   │                              AlertDelivery
-    │   ├── analytics.ts            ← OverviewMetrics, LlmUsagePoint, ErrorRatePoint,
-    │   │                              LatencyStat, SessionFunnel
+    │   ├── session.ts              ← SessionStatus, SessionSummary, SessionDetail, TracePage
+    │   ├── alert.ts                ← AlertSummary, AlertDetail, AlertStatus, AlertStats
+    │   ├── analytics.ts            ← OverviewMetrics, LlmUsagePoint, ErrorRatePoint, LatencyStat
     │   ├── rule.ts                 ← PolicyRule, RuleType, EvalType
-    │   ├── channel.ts              ← DeliveryChannel, ChannelType, ChannelConfig,
-    │   │                              WebhookConfig, SlackConfig, PagerdutyConfig
+    │   ├── channel.ts              ← DeliveryChannel, ChannelType, ChannelConfig
     │   ├── common.ts               ← Paginated<T>, ApiError, ListParams
-    │   └── security.ts             ← RiskBand, SessionRiskScore, SecurityFinding,
-    │                                  SecurityOverview, RemediationCard, InjectionSignature  (Zone 6)
+    │   ├── security.ts             ← RiskBand, SessionRiskScore, SecurityFinding, SecurityOverview  (Zone 6)
+    │   └── auth.ts                 ← LoginRequest/Response, UserSummary, InviteSummary, etc.
     │
-    ├── lib/                        ← infra clients
+    ├── lib/                        ← infra clients + auth helpers
     │   ├── postgres.ts             ← postgres.js pool + queryRow/queryRows/queryValue
     │   ├── clickhouse.ts           ← @clickhouse/client + stream/batch helpers
     │   ├── redis.ts                ← ioredis + pub/sub helpers
     │   ├── kafka.ts                ← kafkajs producer (control events only)
-    │   └── cache.ts                ← generic Redis cache wrapper (dp:api: prefix)
+    │   ├── cache.ts                ← generic Redis cache wrapper (dp:api: prefix)
+    │   ├── auth-tokens.ts          ← generateAccessToken, generateRefreshToken, hashToken
+    │   └── email/
+    │       ├── index.ts            ← createEmailProvider factory (console/smtp/resend)
+    │       ├── console.ts          ← ConsoleEmailProvider — logs to stdout in dev
+    │       ├── smtp.ts             ← SmtpEmailProvider (nodemailer)
+    │       ├── resend.ts           ← ResendEmailProvider (@resend/node)
+    │       └── templates.ts        ← inviteEmail(), resetEmail() HTML + text templates
     │
     ├── middleware/
-    │   ├── auth.ts                 ← JWT (dashboard) + SDK key (control/commands) auth
+    │   ├── auth.ts                 ← JWT (dashboard, now with role) + SDK key auth
+    │   ├── authorize.ts            ← requireRole('admin'|'editor'|'viewer') rank check
     │   ├── ratelimit.ts            ← per-tenant Redis sliding window
     │   └── cors.ts
     │
@@ -147,7 +152,11 @@ dapplepot_api/
     │   ├── alerts.pg.ts            ← alert feed, detail, stats, status update
     │   ├── rules.pg.ts             ← rule CRUD + dry-run
     │   ├── channels.pg.ts          ← channel CRUD
-    │   └── security.pg.ts          ← overview, session score, findings, remediation stats (Zone 6)
+    │   ├── security.pg.ts          ← overview, session score, findings, remediation stats (Zone 6)
+    │   ├── users.pg.ts             ← findByEmail, create, updateRole, updateStatus, updateProfile
+    │   ├── invites.pg.ts           ← createInvite, listInvites, acceptInvite, revokeInvite
+    │   ├── refresh-tokens.pg.ts    ← create, findActive, revoke, revokeAll
+    │   └── password-resets.pg.ts   ← create, findValid, markUsed
     │
     ├── stitchers/                  ← combines PG + CH results, no HTTP
     │   ├── session-detail.ts       ← Promise.all([pgRow, chTokens, chStats])
@@ -155,6 +164,8 @@ dapplepot_api/
     │
     └── routes/
         ├── index.ts                ← mounts all groups
+        ├── auth.ts                 ← POST /v1/auth/login|refresh|logout|forgot-password|reset-password|accept-invite
+        ├── users.ts                ← GET/POST /v1/users, /me, /invites, /:id/role, /:id/status
         ├── sessions.ts             ← 6 session endpoints + SSE live feed
         ├── analytics.ts            ← 6 analytics endpoints
         ├── alerts.ts               ← 4 alert endpoints
@@ -200,21 +211,38 @@ Key variables:
 | `CLICKHOUSE_HOST` | `abc.clickhouse.cloud` | Hostname only, no `https://` |
 | `CLICKHOUSE_PORT` | `8443` | Default for ClickHouse Cloud |
 | `REDIS_URL` | `redis://localhost:6379` | |
-| `DAPPLEPOT_JWT_SECRET` | `changeme` | Min 1 char |
+| `DAPPLEPOT_JWT_SECRET` | `changeme` | Min 1 char — used to sign access tokens |
+| `DAPPLEPOT_JWT_ACCESS_EXPIRES_IN` | `15m` | Access token lifetime, default `15m` |
+| `DAPPLEPOT_JWT_REFRESH_EXPIRES_IN` | `7d` | Refresh token lifetime, default `7d` |
+| `DAPPLEPOT_EMAIL_PROVIDER` | `console` | `console` (dev) \| `smtp` \| `resend` |
+| `DAPPLEPOT_EMAIL_FROM` | `noreply@dapplepot.io` | From address for invite/reset emails |
+| `DAPPLEPOT_APP_URL` | `http://localhost:5173` | Base URL for email links |
 
 ### 3. Run schema migrations
 
-These run once against the shared Postgres instance. The pipeline has already
-created the base tables — these add API-managed columns and the `channels` table.
+These run once against the shared Postgres instance. The pipeline must be
+seeded first (`make seed` in `dapplepot_pipeline`) to create the `tenants` table.
 
 ```bash
 pnpm migrate
 ```
 
 Reads `POSTGRES_URL` from `.env`, connects over SSL, and tracks applied files in
-a `_migrations` table. Both files are idempotent — safe to re-run.
+a `_migrations` table. All files are idempotent — safe to re-run.
 
-### 4. Start
+### 4. Seed the dev admin user
+
+```bash
+pnpm seed-admin
+# → email:    admin@dapplepot.dev
+# → password: changeme123
+# → role:     admin
+# → tenant:   dapplepot_dev (00000000-0000-0000-0000-000000000001)
+```
+
+Safe to re-run (upsert). Requires the `users` table from migrations above.
+
+### 5. Start
 
 ```bash
 # From dapplepot_pipeline repo, if not already running:
@@ -223,7 +251,7 @@ a `_migrations` table. Both files are idempotent — safe to re-run.
 pnpm dev     # hot-reload dev server on port 3000
 ```
 
-### 5. Verify
+### 6. Verify
 
 ```bash
 curl http://localhost:3000/health
@@ -252,18 +280,158 @@ pnpm lint:fix           # eslint --fix
 
 ### Authentication
 
-Two auth paths — different endpoints use different tokens:
+Three auth paths:
 
-**Dashboard endpoints (all except `GET /v1/control/commands`):**
-`Authorization: Bearer <jwt>` — JWT signed with `DAPPLEPOT_JWT_SECRET`.
-JWT payload must contain `tenant_id` and `user_id`.
+**Public — auth routes (`/v1/auth/*`):**
+No token required. These endpoints issue and revoke tokens.
+
+**Dashboard endpoints (all `/v1/*` except `/v1/auth/*` and `/v1/control/commands`):**
+`Authorization: Bearer <access_token>` — short-lived JWT (15 min) issued by `POST /v1/auth/login`.
+Payload: `{ tenant_id, user_id, role, type: "access" }`.
+Three roles — `admin`, `editor`, `viewer` — enforced per-route by `requireRole()`.
 
 **SDK polling endpoint (`GET /v1/control/commands` only):**
 `Authorization: Bearer <sdk_key>` — the write-only SDK key issued per tenant.
 The API verifies via `dp:auth:{key_hash}` Redis cache (same mechanism as the pipeline).
 
-> SDK keys must never be sent to dashboard endpoints, and JWTs must never be
-> sent to `GET /v1/control/commands`.
+> Refresh tokens (opaque hex strings) are never accepted as access tokens.
+> The middleware rejects any JWT whose `type` field is not `"access"`.
+
+### Role permission matrix
+
+| Action | admin | editor | viewer |
+|--------|-------|--------|--------|
+| All read endpoints (sessions, analytics, alerts, security, rules, channels) | yes | yes | yes |
+| `PUT /v1/alerts/:id/status` — acknowledge / resolve | yes | yes | no |
+| `POST /v1/control/kill-switch` — `POST /v1/control/interrupt` | yes | yes | no |
+| `POST/PUT /v1/rules` — create/edit rules | yes | yes | no |
+| `POST/PUT /v1/channels` — create/edit channels | yes | no | no |
+| `GET /v1/users` — list users | yes | no | no |
+| `POST /v1/users/invite` — invite/role/disable | yes | no | no |
+| `GET/PUT /v1/users/me` — own profile | yes | yes | yes |
+
+---
+
+### Auth
+
+All auth routes are public — no JWT required.
+
+#### `POST /v1/auth/login`
+
+```
+Body:     { "email": "...", "password": "..." }
+Response: { accessToken, refreshToken, expiresIn: 900, user: { userId, tenantId, email, name, role } }
+Errors:   401 INVALID_CREDENTIALS (wrong password or disabled account — same shape, timing-safe)
+          429 RATE_LIMITED (10 attempts per email per 15 min)
+```
+
+#### `POST /v1/auth/refresh`
+
+```
+Body:     { "refreshToken": "<hex>" }
+Response: same shape as /login — rotated tokens
+Behavior: old refresh token revoked on use. Replaying a consumed token → 401.
+Errors:   401 INVALID_REFRESH_TOKEN
+```
+
+#### `POST /v1/auth/logout`
+
+```
+Body:     { "refreshToken": "<hex>" }
+Response: { "ok": true }
+Note:     Always 200 — never leaks whether token was valid.
+```
+
+#### `POST /v1/auth/forgot-password`
+
+```
+Body:     { "email": "..." }
+Response: { "ok": true, "message": "If that email exists..." }
+Note:     Always 200 — never leaks whether email exists.
+Rate:     5 requests per email per hour.
+```
+
+#### `POST /v1/auth/reset-password`
+
+```
+Body:     { "token": "<hex>", "password": "<min 8 chars>" }
+Response: { "ok": true }
+Behavior: Revokes all active sessions in the same transaction.
+Errors:   400 INVALID_RESET_TOKEN (bad/expired/already-used token)
+```
+
+#### `POST /v1/auth/accept-invite`
+
+```
+Body:     { "token": "<hex>", "name": "...", "password": "<min 8 chars>" }
+Response: same shape as /login (auto-logged in after accepting)
+Errors:   400 INVALID_INVITE_TOKEN, 409 EMAIL_EXISTS
+```
+
+---
+
+### Users
+
+All user routes require a valid access token.
+
+#### `GET /v1/users` — admin only
+
+```
+Query: page, limit (max 100), status ('active'|'disabled')
+Response: { data: UserSummary[], pagination: { page, limit, total, pages } }
+```
+
+#### `GET /v1/users/me` — any role
+
+```
+Response: UserSummary (no passwordHash)
+```
+
+#### `PUT /v1/users/me` — any role
+
+```
+Body: { name?, currentPassword?, newPassword? }
+Note: Password change requires both fields; revokes all refresh tokens.
+Errors: 400 INVALID_CURRENT_PASSWORD
+```
+
+#### `POST /v1/users/invite` — admin only
+
+```
+Body:     { "email": "...", "role": "editor" }
+Response: 201 InviteSummary
+Errors:   409 EMAIL_EXISTS | INVITE_PENDING
+```
+
+#### `GET /v1/users/invites` — admin only
+
+```
+Response: { invites: InviteSummary[] }
+```
+
+#### `DELETE /v1/users/invites/:id` — admin only
+
+```
+Response: { "ok": true }
+Errors:   404 if invite not found or not pending
+```
+
+#### `PUT /v1/users/:id/role` — admin only
+
+```
+Body:     { "role": "admin"|"editor"|"viewer" }
+Response: UserSummary
+Errors:   400 FORBIDDEN (cannot change own role), 404 user not found
+```
+
+#### `PUT /v1/users/:id/status` — admin only
+
+```
+Body:     { "status": "active"|"disabled" }
+Response: UserSummary
+Behavior: Disabling revokes all refresh tokens for the user.
+Errors:   400 FORBIDDEN (cannot disable self), 404 user not found
+```
 
 ---
 
@@ -614,12 +782,18 @@ share Redis DB 0 — key collision is prevented by namespace prefix only.
 
 ## Schema migrations
 
-Two migrations must be run once before starting this service. Both are idempotent.
+All migrations are idempotent (`IF NOT EXISTS`). Run with `pnpm migrate` in order.
 
 | File | What it does |
 |------|-------------|
 | `migrations/001_api_alerts_columns.sql` | Adds `status`, `resolved_at` to pipeline's `alerts` table |
 | `migrations/002_channels_table.sql` | Creates the `channels` config table (API-owned) |
+| `migrations/003_users_table.sql` | Creates `users` with role, status, bcrypt hash |
+| `migrations/004_invites_table.sql` | Creates `invites` with partial unique index for pending invites |
+| `migrations/005_password_resets_table.sql` | Creates `password_resets` for 1-hour reset tokens |
+| `migrations/006_refresh_tokens_table.sql` | Creates `refresh_tokens` for revocable refresh tokens |
+
+> `003`–`006` depend on the `tenants` table from `dapplepot_pipeline`. Run `make seed` in the pipeline repo first.
 
 ---
 
@@ -692,21 +866,23 @@ pnpm typecheck          # tsc --noEmit
 pnpm lint               # eslint src/ tests/
 pnpm lint:fix           # eslint --fix
 pnpm migrate            # run SQL migrations from migrations/ against POSTGRES_URL in .env
+pnpm seed-admin         # seed dev admin user (admin@dapplepot.dev / changeme123)
 ```
 
 ---
 
 ## For IDE agents
 
-Read `agent.md` in full before writing any code. It contains:
-- All 22 endpoint definitions with exact query parameter specs
-- Full SQL for every query (stitch, analytics, trace cursor, sessions list, rules, channels)
+Read `AGENT.md` in full before writing any code. It contains:
+- All endpoint definitions with exact query parameter specs (sessions, analytics, alerts, control, rules, channels, security, auth, users)
+- Full SQL for every query (stitch, analytics, trace cursor, sessions list, rules, channels, users, invites, refresh tokens)
 - All TypeScript response types with field-level comments
 - The stitcher pattern for parallel PG + CH fan-out
 - SSE implementation for the live session feed
 - SDK command poll implementation (`GET /v1/control/commands`)
 - Kill-switch and interrupt control flows
-- 6-phase build order across all source files
-- 12 locked architecture decisions with reasons
-- ClickHouse aggregate table schemas (confirmed column lists)
-- Schema migration SQL (alerts columns + channels table)
+- Auth system: JWT structure, refresh token rotation, role permission matrix, email abstraction
+- Build order across all source files
+- Locked architecture decisions with reasons
+- ClickHouse aggregate table schemas
+- All schema migration SQL (001–006)

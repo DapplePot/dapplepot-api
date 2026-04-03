@@ -8,6 +8,12 @@ beforeAll(async () => {
   process.env['REDIS_URL'] = process.env['REDIS_URL'] ?? 'redis://localhost:6379'
   process.env['KAFKA_BOOTSTRAP_SERVERS'] = process.env['KAFKA_BOOTSTRAP_SERVERS'] ?? 'localhost:9092'
   process.env['DAPPLEPOT_JWT_SECRET'] = process.env['DAPPLEPOT_JWT_SECRET'] ?? 'test-secret'
+  // Auth system env vars (all have schema defaults, set explicitly for test clarity)
+  process.env['DAPPLEPOT_JWT_ACCESS_EXPIRES_IN'] = process.env['DAPPLEPOT_JWT_ACCESS_EXPIRES_IN'] ?? '15m'
+  process.env['DAPPLEPOT_JWT_REFRESH_EXPIRES_IN'] = process.env['DAPPLEPOT_JWT_REFRESH_EXPIRES_IN'] ?? '7d'
+  process.env['DAPPLEPOT_EMAIL_PROVIDER'] = process.env['DAPPLEPOT_EMAIL_PROVIDER'] ?? 'console'
+  process.env['DAPPLEPOT_EMAIL_FROM'] = process.env['DAPPLEPOT_EMAIL_FROM'] ?? 'test@dapplepot.dev'
+  process.env['DAPPLEPOT_APP_URL'] = process.env['DAPPLEPOT_APP_URL'] ?? 'http://localhost:5173'
 })
 
 afterAll(async () => {
