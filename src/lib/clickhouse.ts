@@ -14,12 +14,18 @@ export async function chQuery<T extends Record<string, unknown>>(
   query: string,
   params?: Record<string, unknown>
 ): Promise<T[]> {
-  const result = await clickhouse.query({
-    query,
-    ...(params !== undefined ? { query_params: params } : {}),
-    format: 'JSONEachRow',
-  })
-  return result.json<T>()
+  try {
+    const result = await clickhouse.query({
+      query,
+      ...(params !== undefined ? { query_params: params } : {}),
+      format: 'JSONEachRow',
+    })
+    return result.json<T>()
+  } catch (err) {
+    const cause = (err as { cause?: unknown }).cause
+    if (cause) console.error('[clickhouse] underlying error:', cause)
+    throw err
+  }
 }
 
 export async function chQueryRow<T extends Record<string, unknown>>(
