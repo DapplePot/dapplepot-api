@@ -82,7 +82,8 @@ dapplepot_api/
 │   # Migration runner
 ├── scripts/
 │   ├── migrate.ts                      ← Node.js migration runner (uses dotenv + postgres.js, no psql needed)
-│   └── seed_admin.ts                   ← seeds default admin user (admin@dapplepot.dev / changeme123) for dev
+│   ├── seed_superadmin.ts              ← seeds platform superadmin (superadmin@dapplepot.dev / superadmin123, tenant_id = NULL)
+│   └── seed_admin.ts                   ← seeds dapplepot_dev tenant + admin user (admin@dapplepot.dev / changeme123)
 │
 │   # Application entry
 ├── src/
@@ -121,7 +122,7 @@ dapplepot_api/
 │   │   # Auth + middleware
 │   ├── middleware/
 │   │   ├── auth.ts                     ← JWT (now with role + type:'access' check) and SDK key auth
-│   │   ├── authorize.ts                ← requireRole('admin'|'editor'|'viewer') — rank-based check
+│   │   ├── authorize.ts                ← requireRole('superadmin'|'admin'|'editor'|'viewer') — rank-based check
 │   │   ├── ratelimit.ts                ← per-tenant sliding window via Redis
 │   │   └── cors.ts                     ← CORS config for dapplepot_ui origin
 │   │
@@ -130,6 +131,9 @@ dapplepot_api/
 │   │   ├── index.ts                    ← mounts all route groups onto Hono app
 │   │   ├── auth.ts                     ← POST /v1/auth/login|refresh|logout|forgot-password|reset-password|accept-invite
 │   │   ├── users.ts                    ← GET/POST /v1/users, /me, /invites, /:id/role, /:id/status
+│   │   ├── tenants.ts                  ← GET /v1/tenants  |  POST /v1/tenants/onboard (superadmin only)
+│   │   ├── agents.ts                   ← GET /v1/agents (viewer+)  |  POST /v1/agents (admin only)
+│   │   ├── sdk-keys.ts                 ← GET /v1/sdk-keys (viewer+)  |  GET /v1/sdk-keys/:keyId/reveal (admin)
 │   │   ├── sessions.ts                 ← GET /v1/sessions, /v1/sessions/:id, /trace, /state-history, /alerts, /live (SSE)
 │   │   ├── analytics.ts                ← GET /v1/analytics/overview, /llm-usage, /error-rates, /latency, /cost, /sessions/funnel
 │   │   ├── alerts.ts                   ← GET /v1/alerts, /:id  |  PUT /v1/alerts/:id/status
@@ -148,6 +152,9 @@ dapplepot_api/
 │   │   ├── rules.pg.ts                 ← policy_rules CRUD queries
 │   │   ├── channels.pg.ts              ← delivery channel CRUD queries
 │   │   ├── security.pg.ts              ← overview, session score, findings, remediation stats (Zone 6)
+│   │   ├── tenants.pg.ts               ← listTenants(), onboardTenant() — sql.begin() transaction: INSERT tenant + admin user + sdk_key; returns raw sdkKey once
+│   │   ├── agents.pg.ts                ← listAgents(tenantId), createAgent({ tenantId, name, latestVersion })
+│   │   ├── sdk-keys.pg.ts              ← listSdkKeys(tenantId), revealSdkKey(tenantId, keyId) → raw_key
 │   │   ├── users.pg.ts                 ← findByEmail, findById, create, listUsers, updateRole, updateStatus, updateProfile
 │   │   ├── invites.pg.ts               ← createInvite, listInvites, findPendingByToken/Email, acceptInvite, revokeInvite
 │   │   ├── refresh-tokens.pg.ts        ← createRefreshToken, findActiveRefreshToken, revokeRefreshToken, revokeAllForUser
@@ -264,6 +271,27 @@ dapplepot_api/
 | POST | `/v1/channels` | PG | Create channel config |
 | PUT | `/v1/channels/:id` | PG | Update channel config (enable/disable, edit) |
 
+### Resource group: SDK Keys (2 endpoints — JWT required, tenant-scoped)
+
+| Method | Path | Role | Purpose |
+|--------|------|------|---------|
+| GET | `/v1/sdk-keys` | viewer+ | List all SDK keys for tenant (always masked) |
+| GET | `/v1/sdk-keys/:keyId/reveal` | admin | Return stored key prefix for a specific key |
+
+### Resource group: Agents (2 endpoints — JWT required, tenant-scoped)
+
+| Method | Path | Role | Purpose |
+|--------|------|------|---------|
+| GET | `/v1/agents` | viewer+ | List all agents for caller's tenant |
+| POST | `/v1/agents` | admin | Create a new agent under caller's tenant |
+
+### Resource group: Tenants (2 endpoints — superadmin only)
+
+| Method | Path | Store | Purpose |
+|--------|------|-------|---------|
+| GET | `/v1/tenants` | PG | List all tenants with admin user + user count |
+| POST | `/v1/tenants/onboard` | PG (transaction) | Create tenant + first admin user atomically |
+
 ### Resource group: Security (5 endpoints — Zone 6, read-only)
 
 Data written by `dapplepot_security`. This service reads and serves the results — it does not run detection or scoring itself.
@@ -295,7 +323,7 @@ Data written by `dapplepot_security`. This service reads and serves the results 
   sub: userId,
   tenant_id: tenantId,   // ← kept for backward compat
   user_id: userId,
-  role: 'admin' | 'editor' | 'viewer',
+  role: 'superadmin' | 'admin' | 'editor' | 'viewer',
   type: 'access',
   iat, exp
 }
@@ -318,23 +346,29 @@ Verify via `dp:auth:{key_hash}` Redis cache → `sdk_keys` table on miss. 401 / 
 `src/middleware/authorize.ts` — `requireRole(minimumRole)`:
 
 ```typescript
-const ROLE_RANK = { admin: 3, editor: 2, viewer: 1 }
+const ROLE_RANK = { superadmin: 4, admin: 3, editor: 2, viewer: 1 }
 // unknown role → rank 0 → always blocked
 // Must run AFTER jwtAuth (which sets 'role' on context)
 ```
 
 Role permission matrix:
 
-| Action | admin | editor | viewer |
-|--------|-------|--------|--------|
-| All read endpoints | yes | yes | yes |
-| `PUT /v1/alerts/:id/status` | yes | yes | no |
-| `POST /v1/control/kill-switch \| interrupt` | yes | yes | no |
-| `POST/PUT /v1/rules` | yes | yes | no |
-| `POST/PUT /v1/channels` | yes | no | no |
-| `GET /v1/users` | yes | no | no |
-| `POST /v1/users/invite`, `PUT /:id/role`, `PUT /:id/status` | yes | no | no |
-| `GET/PUT /v1/users/me` | yes | yes | yes |
+| Action | superadmin | admin | editor | viewer |
+|--------|------------|-------|--------|--------|
+| All read endpoints | yes | yes | yes | yes |
+| `PUT /v1/alerts/:id/status` | yes | yes | yes | no |
+| `POST /v1/control/kill-switch \| interrupt` | yes | yes | yes | no |
+| `POST/PUT /v1/rules` | yes | yes | yes | no |
+| `POST/PUT /v1/channels` | yes | yes | no | no |
+| `GET /v1/users` | yes | yes | no | no |
+| `POST /v1/users/invite`, `PUT /:id/role`, `PUT /:id/status` | yes | yes | no | no |
+| `GET/PUT /v1/users/me` | yes | yes | yes | yes |
+| `GET /v1/tenants` | yes | no | no | no |
+| `POST /v1/tenants/onboard` | yes | no | no | no |
+| `GET /v1/agents` | yes | yes | yes | yes |
+| `POST /v1/agents` | yes | yes | no | no |
+| `GET /v1/sdk-keys` | yes | yes | yes | yes |
+| `GET /v1/sdk-keys/:id/reveal` | yes | yes | no | no |
 
 ### Token design
 
@@ -1448,6 +1482,10 @@ SDK key auth lookups (`GET dp:auth:{key_hash}`) work across both services.
 pnpm install
 cp .env.example .env
 
+pnpm migrate            # run SQL migrations (creates tables, indexes)
+pnpm seed-superadmin    # platform superadmin (superadmin@dapplepot.dev / superadmin123, no tenant)
+pnpm seed-admin         # dapplepot_dev tenant + admin user (admin@dapplepot.dev / changeme123)
+
 pnpm dev       # starts API on port 3000 with hot reload
 
 pnpm test:unit          # vitest unit tests, no infra
@@ -1934,8 +1972,8 @@ CREATE TABLE obs_session_tokens (
 ## 21. Schema migrations
 
 Run these once against the shared Postgres instance **before** starting this service.
-The pipeline has already created the base tables — these add API-managed columns
-and the `channels` table which the pipeline does not create.
+This repo owns all tables listed below. The `alerts` table and its `status`/`resolved_at`
+columns are owned by `dapplepot_pipeline` — that migration lives there, not here.
 
 Use the built-in migration runner (no `psql` required):
 
@@ -1949,22 +1987,48 @@ pnpm migrate
 - Runs each `.sql` file in `migrations/` in filename order
 - Idempotent — safe to re-run
 
+Run order: `001` → `002` → `003` → `004` → `005` → `006` → `007` → `008`. All are idempotent.
+
 ```sql
--- migrations/001_api_alerts_columns.sql
--- Adds operational columns managed by dapplepot_api to the pipeline's alerts table.
-ALTER TABLE alerts
-  ADD COLUMN IF NOT EXISTS status      TEXT        NOT NULL DEFAULT 'open',
-  ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ;
+-- migrations/001_tenants.sql
+CREATE TABLE IF NOT EXISTS tenants (
+    tenant_id    UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    name         TEXT        NOT NULL UNIQUE,
+    enabled      BOOLEAN     NOT NULL DEFAULT true,
+    token_budget BIGINT,
+    rate_limit   INT,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 
-CREATE INDEX IF NOT EXISTS idx_alerts_status
-  ON alerts (tenant_id, status);
+CREATE TABLE IF NOT EXISTS sdk_keys (
+    key_id       UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id    UUID        NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    key_hash     TEXT        NOT NULL UNIQUE,
+    name         TEXT,
+    enabled      BOOLEAN     NOT NULL DEFAULT true,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at TIMESTAMPTZ
+);
 
-CREATE INDEX IF NOT EXISTS idx_alerts_triggered_tenant
-  ON alerts (tenant_id, triggered_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sdk_keys_hash ON sdk_keys (key_hash) WHERE enabled = true;
 ```
 
 ```sql
--- migrations/002_channels_table.sql
+-- migrations/002_agents.sql
+CREATE TABLE IF NOT EXISTS agents (
+    agent_id       UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+    tenant_id      UUID        NOT NULL REFERENCES tenants(tenant_id) ON DELETE CASCADE,
+    name           TEXT        NOT NULL,
+    latest_version TEXT,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (tenant_id, name)
+);
+```
+
+```sql
+-- migrations/003_channels_table.sql
 -- Delivery channel config table — owned entirely by dapplepot_api.
 -- alert_deliveries.channel is a plain text column (e.g. 'webhook', 'slack') — not a FK to this table.
 CREATE TABLE IF NOT EXISTS channels (
@@ -1982,27 +2046,29 @@ CREATE INDEX IF NOT EXISTS idx_channels_tenant
   ON channels (tenant_id);
 ```
 
-Run order: `001` → `002` → `003` → `004` → `005` → `006`. All are idempotent.
-
 ```sql
--- migrations/003_users_table.sql
+-- migrations/004_users_table.sql
+-- tenant_id is nullable: superadmin users are platform-level (not scoped to any tenant)
 CREATE TABLE IF NOT EXISTS users (
     user_id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    tenant_id     UUID NOT NULL REFERENCES tenants(tenant_id),
+    tenant_id     UUID REFERENCES tenants(tenant_id),
     email         TEXT NOT NULL,
     name          TEXT NOT NULL DEFAULT '',
     password_hash TEXT NOT NULL,
-    role          TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('admin','editor','viewer')),
+    role          TEXT NOT NULL DEFAULT 'viewer' CHECK (role IN ('superadmin','admin','editor','viewer')),
     status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','disabled')),
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT uq_users_tenant_email UNIQUE (tenant_id, email)
 );
 CREATE INDEX IF NOT EXISTS idx_users_tenant ON users (tenant_id);
+-- Superadmin users have tenant_id = NULL; enforce unique email within that group
+CREATE UNIQUE INDEX IF NOT EXISTS uq_users_superadmin_email
+    ON users (email) WHERE tenant_id IS NULL;
 ```
 
 ```sql
--- migrations/004_invites_table.sql
+-- migrations/005_invites_table.sql
 CREATE TABLE IF NOT EXISTS invites (
     invite_id  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     tenant_id  UUID NOT NULL REFERENCES tenants(tenant_id),
@@ -2020,7 +2086,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_invites_pending_email ON invites (tenant_i
 ```
 
 ```sql
--- migrations/005_password_resets_table.sql
+-- migrations/006_password_resets_table.sql
 CREATE TABLE IF NOT EXISTS password_resets (
     reset_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id    UUID NOT NULL REFERENCES users(user_id),
@@ -2033,7 +2099,7 @@ CREATE INDEX IF NOT EXISTS idx_password_resets_user ON password_resets (user_id)
 ```
 
 ```sql
--- migrations/006_refresh_tokens_table.sql
+-- migrations/007_refresh_tokens_table.sql
 CREATE TABLE IF NOT EXISTS refresh_tokens (
     token_id   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id    UUID NOT NULL REFERENCES users(user_id),
@@ -2043,6 +2109,15 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_user ON refresh_tokens (user_id);
+```
+
+```sql
+-- migrations/008_sdk_keys_raw.sql
+-- masked_key: pre-built masked string shown to all roles
+-- raw_key:    full plaintext key returned to admin on reveal (key_hash is one-way, can't be reversed)
+ALTER TABLE sdk_keys
+  ADD COLUMN IF NOT EXISTS masked_key TEXT,
+  ADD COLUMN IF NOT EXISTS raw_key    TEXT;
 ```
 
 ---
@@ -2083,6 +2158,33 @@ Users:
 - `POST /v1/users/invite` → 201; duplicate → 409 `INVITE_PENDING`
 - `PUT /v1/users/:id/role` self-change → 400; other user → 200
 - `PUT /v1/users/:id/status` disable → 200, refresh tokens revoked (verified in DB)
+
+Agents:
+- `GET /v1/agents` → 200 array (empty array when none exist, never 404)
+- `GET /v1/agents` viewer/editor/admin → 200; always scoped to JWT tenant_id
+- `POST /v1/agents` editor/viewer → 403; admin → 201 AgentSummary
+- `POST /v1/agents` duplicate name within tenant → 409 `{ error: "An agent with this name already exists" }`
+- `POST /v1/agents` missing name → 400 `{ error: "name is required" }`
+
+Tenants:
+- `GET /v1/tenants` non-superadmin → 403; superadmin → 200 array (never 404, [] when empty)
+- `GET /v1/tenants` adminUser is null when no active admin role user exists for the tenant
+- `GET /v1/tenants` userCount is integer derived from COUNT(*) on users for that tenant
+- `POST /v1/tenants/onboard` without token → 401; non-superadmin → 403
+- `POST /v1/tenants/onboard` duplicate tenant name → 409 `{ error: "A tenant with this name already exists" }`
+- `POST /v1/tenants/onboard` valid → 201 `{ tenant: { tenantId, name, enabled, tokenBudget, rateLimit, createdAt, updatedAt }, admin: { userId, email, name, role: "admin", createdAt }, sdkKey: "dp_sk_4c8d17..." }`
+- Transaction wraps all three INSERTs (tenant + user + sdk_key) — any failure rolls back all three
+- `sdkKey` is the raw key returned once in the onboard response; `raw_key` in DB enables admin reveal later
+- SDK key format: `dp_sk_` + `randomBytes(16).toString('hex')` = 38 chars total
+
+SDK Keys:
+- `GET /v1/sdk-keys` → 200 array; `maskedKey` is always `dp_sk_` + 16 bullet chars regardless of role
+- `GET /v1/sdk-keys/:keyId/reveal` editor/viewer → 403; admin → `{ key: "dp_sk_a1b2c3..." }` (full plaintext key)
+- `GET /v1/sdk-keys/:keyId/reveal` wrong tenant or missing key → 404
+- `masked_key` stored in DB (e.g. `dp_sk_` + 26 bullets) — returned as-is in list, never computed in app layer
+- `raw_key` stores full plaintext key — returned only on reveal to admin
+- Keys predating migration `009` have `raw_key = null` — reveal returns `{ key: null }`
+- Key format: `dp_sk_` + `randomBytes(16).toString('hex')` = 38 chars (e.g. `dp_sk_4c8d1719a2a51626f59117e19c0a4699`)
 
 Other endpoints:
 - `GET /health` → 200 with `postgres`, `clickhouse`, `redis` fields

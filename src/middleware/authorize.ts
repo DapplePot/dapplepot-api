@@ -1,8 +1,8 @@
 import type { Context, Next } from 'hono'
 
-type Role = 'admin' | 'editor' | 'viewer'
+type Role = 'superadmin' | 'admin' | 'editor' | 'viewer'
 
-const ROLE_RANK: Record<Role, number> = { admin: 3, editor: 2, viewer: 1 }
+const ROLE_RANK: Record<Role, number> = { superadmin: 4, admin: 3, editor: 2, viewer: 1 }
 
 /**
  * Returns middleware that allows access if user's role >= minimumRole.

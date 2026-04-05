@@ -14,7 +14,8 @@
     "lint": "eslint src/ tests/",
     "lint:fix": "eslint --fix src/ tests/",
     "migrate": "tsx scripts/migrate.ts",
-    "seed-admin": "tsx scripts/seed_admin.ts"
+    "seed-admin": "tsx scripts/seed_admin.ts",
+    "seed-superadmin": "tsx scripts/seed_superadmin.ts"
   },
   "dependencies": {
     "@clickhouse/client": "^1.4.0",

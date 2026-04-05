@@ -8,12 +8,18 @@ import { channelsRouter } from './channels.js'
 import { securityRouter } from './security.js'
 import { authRouter } from './auth.js'
 import { usersRouter } from './users.js'
+import { tenantsRouter } from './tenants.js'
+import { agentsRouter } from './agents.js'
+import { sdkKeysRouter } from './sdk-keys.js'
 
 type Variables = { tenantId: string; userId: string; role: string }
 
 export function mountRoutes(app: Hono<{ Variables: Variables }>) {
   app.route('/v1/auth', authRouter)
   app.route('/v1/users', usersRouter)
+  app.route('/v1/tenants', tenantsRouter)
+  app.route('/v1/agents', agentsRouter)
+  app.route('/v1/sdk-keys', sdkKeysRouter)
   app.route('/v1/sessions', sessionsRouter)
   app.route('/v1/analytics', analyticsRouter)
   app.route('/v1/alerts', alertsRouter)

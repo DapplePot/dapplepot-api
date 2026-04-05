@@ -12,10 +12,10 @@ export interface LoginResponse {
 
 export interface UserSummary {
     userId: string
-    tenantId: string
+    tenantId: string | null
     email: string
     name: string
-    role: 'admin' | 'editor' | 'viewer'
+    role: 'superadmin' | 'admin' | 'editor' | 'viewer'
     status: 'active' | 'disabled'
     createdAt: string
 }

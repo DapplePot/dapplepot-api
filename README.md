@@ -59,6 +59,12 @@ dapplepot_ui (React dashboard)
   └── GET  /v1/security/sessions/:id/findings security findings for a session
   └── GET  /v1/security/remediation     top firing signals + fix guidance
   └── GET  /v1/security/signatures      active injection signatures for tenant
+  └── GET  /v1/tenants                   list all tenants with admin user + user count (superadmin only)
+  └── POST /v1/tenants/onboard          create tenant + admin user atomically (superadmin only)
+  └── GET  /v1/agents                   list agents for caller's tenant
+  └── POST /v1/agents                   create agent (admin only)
+  └── GET  /v1/sdk-keys                 list SDK keys for tenant (masked)
+  └── GET  /v1/sdk-keys/:id/reveal      reveal full key (admin only)
 
 dapplepot_langgraph SDK
   └── GET  /v1/control/commands         SDK polls every 5s for pending commands (JSON)
@@ -69,7 +75,8 @@ Reads from:
   └── ClickHouse   (obs_events, obs_llm_hourly, obs_error_hourly, obs_session_tokens)
 
 Writes to:
-  ├── Postgres     (alerts.status, alerts.resolved_at — acknowledge/resolve only)
+  ├── Postgres     (alerts.status, alerts.resolved_at — acknowledge/resolve only;
+  │                 tenants + users + sdk_keys — onboarding, in a single transaction)
   ├── Redis        (dp:commands:{agent_id} — command queue; cache invalidation)
   └── Kafka        (obs.priority.v1 — kill-switch + interrupt commands only)
 ```
@@ -107,7 +114,8 @@ dapplepot_api/
 │
 ├── scripts/
 │   ├── migrate.ts                  ← Node.js migration runner (no psql needed)
-│   └── seed_admin.ts               ← seeds default admin user for dev tenant
+│   ├── seed_superadmin.ts          ← seeds platform superadmin user (tenant_id = NULL)
+│   └── seed_admin.ts               ← seeds dapplepot_dev tenant + scoped admin user
 │
 └── src/
     ├── index.ts                    ← server entry: serve() + SIGTERM handler
@@ -141,7 +149,7 @@ dapplepot_api/
     │
     ├── middleware/
     │   ├── auth.ts                 ← JWT (dashboard, now with role) + SDK key auth
-    │   ├── authorize.ts            ← requireRole('admin'|'editor'|'viewer') rank check
+    │   ├── authorize.ts            ← requireRole('superadmin'|'admin'|'editor'|'viewer') rank check
     │   ├── ratelimit.ts            ← per-tenant Redis sliding window
     │   └── cors.ts
     │
@@ -153,6 +161,9 @@ dapplepot_api/
     │   ├── rules.pg.ts             ← rule CRUD + dry-run
     │   ├── channels.pg.ts          ← channel CRUD
     │   ├── security.pg.ts          ← overview, session score, findings, remediation stats (Zone 6)
+    │   ├── tenants.pg.ts           ← listTenants(), onboardTenant() — transaction: tenant + admin user + sdk_key
+    │   ├── agents.pg.ts            ← listAgents, createAgent
+    │   ├── sdk-keys.pg.ts          ← listSdkKeys (masked_key from DB), revealSdkKey → raw_key (admin)
     │   ├── users.pg.ts             ← findByEmail, create, updateRole, updateStatus, updateProfile
     │   ├── invites.pg.ts           ← createInvite, listInvites, acceptInvite, revokeInvite
     │   ├── refresh-tokens.pg.ts    ← create, findActive, revoke, revokeAll
@@ -166,6 +177,9 @@ dapplepot_api/
         ├── index.ts                ← mounts all groups
         ├── auth.ts                 ← POST /v1/auth/login|refresh|logout|forgot-password|reset-password|accept-invite
         ├── users.ts                ← GET/POST /v1/users, /me, /invites, /:id/role, /:id/status
+        ├── tenants.ts              ← GET /v1/tenants, POST /v1/tenants/onboard (superadmin only)
+        ├── agents.ts               ← GET /v1/agents, POST /v1/agents
+        ├── sdk-keys.ts             ← GET /v1/sdk-keys, GET /v1/sdk-keys/:keyId/reveal
         ├── sessions.ts             ← 6 session endpoints + SSE live feed
         ├── analytics.ts            ← 6 analytics endpoints
         ├── alerts.ts               ← 4 alert endpoints
@@ -220,9 +234,6 @@ Key variables:
 
 ### 3. Run schema migrations
 
-These run once against the shared Postgres instance. The pipeline must be
-seeded first (`make seed` in `dapplepot_pipeline`) to create the `tenants` table.
-
 ```bash
 pnpm migrate
 ```
@@ -230,9 +241,17 @@ pnpm migrate
 Reads `POSTGRES_URL` from `.env`, connects over SSL, and tracks applied files in
 a `_migrations` table. All files are idempotent — safe to re-run.
 
-### 4. Seed the dev admin user
+> Ensure `dapplepot_pipeline` has run its own migrations first so the `alerts` table exists before this service's routes query it.
+
+### 4. Seed dev users
 
 ```bash
+pnpm seed-superadmin
+# → email:    superadmin@dapplepot.dev
+# → password: superadmin123
+# → role:     superadmin
+# → tenant:   (none — platform-level)
+
 pnpm seed-admin
 # → email:    admin@dapplepot.dev
 # → password: changeme123
@@ -240,7 +259,7 @@ pnpm seed-admin
 # → tenant:   dapplepot_dev (00000000-0000-0000-0000-000000000001)
 ```
 
-Safe to re-run (upsert). Requires the `users` table from migrations above.
+Both are safe to re-run (upserts). Require the `users` table from migrations above.
 
 ### 5. Start
 
@@ -288,7 +307,7 @@ No token required. These endpoints issue and revoke tokens.
 **Dashboard endpoints (all `/v1/*` except `/v1/auth/*` and `/v1/control/commands`):**
 `Authorization: Bearer <access_token>` — short-lived JWT (15 min) issued by `POST /v1/auth/login`.
 Payload: `{ tenant_id, user_id, role, type: "access" }`.
-Three roles — `admin`, `editor`, `viewer` — enforced per-route by `requireRole()`.
+Four roles — `superadmin`, `admin`, `editor`, `viewer` — enforced per-route by `requireRole()`.
 
 **SDK polling endpoint (`GET /v1/control/commands` only):**
 `Authorization: Bearer <sdk_key>` — the write-only SDK key issued per tenant.
@@ -299,16 +318,22 @@ The API verifies via `dp:auth:{key_hash}` Redis cache (same mechanism as the pip
 
 ### Role permission matrix
 
-| Action | admin | editor | viewer |
-|--------|-------|--------|--------|
-| All read endpoints (sessions, analytics, alerts, security, rules, channels) | yes | yes | yes |
-| `PUT /v1/alerts/:id/status` — acknowledge / resolve | yes | yes | no |
-| `POST /v1/control/kill-switch` — `POST /v1/control/interrupt` | yes | yes | no |
-| `POST/PUT /v1/rules` — create/edit rules | yes | yes | no |
-| `POST/PUT /v1/channels` — create/edit channels | yes | no | no |
-| `GET /v1/users` — list users | yes | no | no |
-| `POST /v1/users/invite` — invite/role/disable | yes | no | no |
-| `GET/PUT /v1/users/me` — own profile | yes | yes | yes |
+| Action | superadmin | admin | editor | viewer |
+|--------|------------|-------|--------|--------|
+| All read endpoints (sessions, analytics, alerts, security, rules, channels) | yes | yes | yes | yes |
+| `PUT /v1/alerts/:id/status` — acknowledge / resolve | yes | yes | yes | no |
+| `POST /v1/control/kill-switch` — `POST /v1/control/interrupt` | yes | yes | yes | no |
+| `POST/PUT /v1/rules` — create/edit rules | yes | yes | yes | no |
+| `POST/PUT /v1/channels` — create/edit channels | yes | yes | no | no |
+| `GET /v1/users` — list users | yes | yes | no | no |
+| `POST /v1/users/invite` — invite/role/disable | yes | yes | no | no |
+| `GET/PUT /v1/users/me` — own profile | yes | yes | yes | yes |
+| `GET /v1/tenants` — list all tenants | yes | no | no | no |
+| `POST /v1/tenants/onboard` — onboard new client | yes | no | no | no |
+| `GET /v1/agents` — list agents | yes | yes | yes | yes |
+| `POST /v1/agents` — create agent | yes | yes | no | no |
+| `GET /v1/sdk-keys` — list SDK keys | yes | yes | yes | yes |
+| `GET /v1/sdk-keys/:id/reveal` — reveal key prefix | yes | yes | no | no |
 
 ---
 
@@ -432,6 +457,90 @@ Response: UserSummary
 Behavior: Disabling revokes all refresh tokens for the user.
 Errors:   400 FORBIDDEN (cannot disable self), 404 user not found
 ```
+
+---
+
+### Agents
+
+#### `GET /v1/agents` — viewer+
+
+```
+Response: AgentSummary[]
+  [ { agentId, tenantId, name, latestVersion, createdAt, updatedAt } ]
+  Returns [] if no agents exist. Always scoped to caller's tenant from JWT.
+```
+
+#### `POST /v1/agents` — admin only
+
+```
+Body:     { "name": "support-bot", "latestVersion": "1.0.0" }
+Response: 201 AgentSummary
+Errors:   400 name missing, 403 not admin, 409 name already exists for tenant
+```
+
+---
+
+### SDK Keys
+
+#### `GET /v1/sdk-keys` — viewer+
+
+```
+Response: SdkKeySummary[]
+  [ { keyId, name, maskedKey: "dp_sk_••••••••••••••••", enabled, createdAt, lastUsedAt } ]
+  maskedKey is always fully masked — prefix is never exposed here.
+  Returns [] if no keys exist.
+```
+
+#### `GET /v1/sdk-keys/:keyId/reveal` — admin only
+
+```
+Response: { "key": "dp_sk_a1b2c3d4..." }
+  Returns the full plaintext key (raw_key) stored at creation time.
+  Viewer/editor → 403. Key predating migration 009 → { "key": null }.
+Errors:   403 not admin, 404 key not found or not in tenant
+```
+
+---
+
+### Tenants
+
+#### `GET /v1/tenants` — superadmin only
+
+```
+Response: TenantListItem[]
+  [ { tenantId, name, enabled, tokenBudget, rateLimit, createdAt, updatedAt,
+      adminUser: { name, email } | null, userCount: number } ]
+  adminUser is null if no active admin exists for the tenant.
+  Returns [] if no tenants exist.
+```
+
+#### `POST /v1/tenants/onboard` — superadmin only
+
+Creates a new tenant and its first admin user atomically. Both inserts are wrapped in a single transaction — if either fails, both are rolled back.
+
+```
+Body:
+  {
+    "tenant": { "name": "Acme Corp", "tokenBudget": 1000000, "rateLimit": 60 },
+    "admin":  { "email": "admin@acme.com", "name": "Jane Smith", "password": "s3cur3P@ss!" }
+  }
+
+Response 201:
+  { "tenant": { tenantId, name, enabled, tokenBudget, rateLimit, createdAt, updatedAt },
+    "admin":  { userId, email, name, role: "admin", createdAt },
+    "sdkKey": "dp_live_a1b2c3..." }
+
+Errors:
+  400  Validation error (missing/invalid fields)
+  401  Missing or expired token
+  403  Caller is not superadmin
+  409  Tenant name already exists
+  500  Unexpected server error
+```
+
+All three operations (tenant, admin user, SDK key) are wrapped in a single transaction — any failure rolls back all three.
+
+`sdkKey` is the raw key — shown **once only**. Only the SHA-256 hash is stored in `sdk_keys`. `tokenBudget` and `rateLimit` are optional — `null` means unlimited.
 
 ---
 
@@ -786,14 +895,17 @@ All migrations are idempotent (`IF NOT EXISTS`). Run with `pnpm migrate` in orde
 
 | File | What it does |
 |------|-------------|
-| `migrations/001_api_alerts_columns.sql` | Adds `status`, `resolved_at` to pipeline's `alerts` table |
-| `migrations/002_channels_table.sql` | Creates the `channels` config table (API-owned) |
-| `migrations/003_users_table.sql` | Creates `users` with role, status, bcrypt hash |
-| `migrations/004_invites_table.sql` | Creates `invites` with partial unique index for pending invites |
-| `migrations/005_password_resets_table.sql` | Creates `password_resets` for 1-hour reset tokens |
-| `migrations/006_refresh_tokens_table.sql` | Creates `refresh_tokens` for revocable refresh tokens |
+| `migrations/001_tenants.sql` | Creates `tenants` + `sdk_keys` tables |
+| `migrations/002_agents.sql` | Creates `agents` table |
+| `migrations/003_channels_table.sql` | Creates the `channels` config table (API-owned) |
+| `migrations/004_users_table.sql` | Creates `users` with role (`superadmin`\|`admin`\|`editor`\|`viewer`), nullable `tenant_id` for superadmin users |
+| `migrations/005_invites_table.sql` | Creates `invites` with partial unique index for pending invites |
+| `migrations/006_password_resets_table.sql` | Creates `password_resets` for 1-hour reset tokens |
+| `migrations/007_refresh_tokens_table.sql` | Creates `refresh_tokens` for revocable refresh tokens |
+| `migrations/008_sdk_keys_raw.sql` | Adds `masked_key` + `raw_key` to `sdk_keys` for Settings page key management |
 
-> `003`–`006` depend on the `tenants` table from `dapplepot_pipeline`. Run `make seed` in the pipeline repo first.
+> The `alerts` table and its `status`/`resolved_at` columns are owned by `dapplepot_pipeline` — that migration lives there.
+> Superadmin users have `tenant_id = NULL` — they are platform-level operators, not scoped to any tenant.
 
 ---
 
@@ -866,7 +978,8 @@ pnpm typecheck          # tsc --noEmit
 pnpm lint               # eslint src/ tests/
 pnpm lint:fix           # eslint --fix
 pnpm migrate            # run SQL migrations from migrations/ against POSTGRES_URL in .env
-pnpm seed-admin         # seed dev admin user (admin@dapplepot.dev / changeme123)
+pnpm seed-superadmin    # seed platform superadmin (superadmin@dapplepot.dev / superadmin123)
+pnpm seed-admin         # seed dapplepot_dev tenant + admin user (admin@dapplepot.dev / changeme123)
 ```
 
 ---

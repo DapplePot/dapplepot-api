@@ -1,12 +1,12 @@
 import { queryRow, queryRows } from '../lib/postgres.js'
 import type { UserSummary } from '../types/auth.js'
 
-type Role = 'admin' | 'editor' | 'viewer'
+type Role = 'superadmin' | 'admin' | 'editor' | 'viewer'
 type Status = 'active' | 'disabled'
 
 interface UserRow extends Record<string, unknown> {
     user_id: string
-    tenant_id: string
+    tenant_id: string | null
     email: string
     name: string
     role: Role
@@ -23,7 +23,7 @@ function toIso(d: Date | string): string {
 function mapUser(r: UserRow): UserSummary & { passwordHash?: string } {
     return {
         userId: r.user_id,
-        tenantId: r.tenant_id,
+        tenantId: r.tenant_id ?? null,
         email: r.email,
         name: r.name,
         role: r.role,
