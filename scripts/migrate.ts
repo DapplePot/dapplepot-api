@@ -6,7 +6,8 @@ import postgres from 'postgres'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
-const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require' })
+const ssl = process.env.POSTGRES_SSL === 'true' ? 'require' : false
+const sql = postgres(process.env.POSTGRES_URL!, { ssl })
 
 await sql`
   CREATE TABLE IF NOT EXISTS _migrations (

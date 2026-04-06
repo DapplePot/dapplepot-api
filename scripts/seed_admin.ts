@@ -19,7 +19,8 @@ const ADMIN_PASSWORD = 'changeme123'
 const ADMIN_NAME     = 'Dev Admin'
 
 async function seed() {
-    const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require' })
+    const ssl = process.env.POSTGRES_SSL === 'true' ? 'require' : false
+    const sql = postgres(process.env.POSTGRES_URL!, { ssl })
 
     // 1. Dev tenant
     await sql`

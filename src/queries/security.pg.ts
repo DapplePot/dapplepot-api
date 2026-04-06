@@ -15,7 +15,7 @@ export async function getSecurityOverview(
               avg(risk_score)                                               AS avg_score
        FROM session_risk_scores
        WHERE tenant_id = $1
-         AND scored_at >= now() - ($2 || ' hours')::interval`,
+         AND scored_at >= now() - make_interval(hours => $2)`,
       [tenantId, windowHours]
     ),
 
@@ -24,7 +24,7 @@ export async function getSecurityOverview(
       `SELECT risk_band, count(*) AS count
        FROM session_risk_scores
        WHERE tenant_id = $1
-         AND scored_at >= now() - ($2 || ' hours')::interval
+         AND scored_at >= now() - make_interval(hours => $2)
        GROUP BY risk_band`,
       [tenantId, windowHours]
     ),
@@ -34,7 +34,7 @@ export async function getSecurityOverview(
       `SELECT owasp_id, count(*) AS count
        FROM security_findings
        WHERE tenant_id = $1
-         AND created_at >= now() - ($2 || ' hours')::interval
+         AND created_at >= now() - make_interval(hours => $2)
        GROUP BY owasp_id
        ORDER BY count DESC
        LIMIT 10`,
@@ -47,7 +47,7 @@ export async function getSecurityOverview(
        FROM session_risk_scores s
        LEFT JOIN agents a ON a.agent_id = s.agent_id
        WHERE s.tenant_id = $1
-         AND s.scored_at >= now() - ($2 || ' hours')::interval
+         AND s.scored_at >= now() - make_interval(hours => $2)
        ORDER BY s.risk_score DESC
        LIMIT 5`,
       [tenantId, windowHours]
@@ -136,7 +136,7 @@ export async function getRemediationStats(
     `SELECT signal_id, owasp_id, count(*) AS count
      FROM security_findings
      WHERE tenant_id = $1
-       AND created_at >= now() - ($2 || ' hours')::interval
+       AND created_at >= now() - make_interval(hours => $2)
      GROUP BY signal_id, owasp_id
      ORDER BY count DESC
      LIMIT 10`,

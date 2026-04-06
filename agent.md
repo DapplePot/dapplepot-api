@@ -81,9 +81,20 @@ dapplepot_api/
 │
 │   # Migration runner
 ├── scripts/
-│   ├── migrate.ts                      ← Node.js migration runner (uses dotenv + postgres.js, no psql needed)
+│   ├── migrate.ts                      ← Node.js migration runner (uses dotenv + postgres.js, no psql needed); SSL gated by POSTGRES_SSL=true
 │   ├── seed_superadmin.ts              ← seeds platform superadmin (superadmin@dapplepot.dev / superadmin123, tenant_id = NULL)
 │   └── seed_admin.ts                   ← seeds dapplepot_dev tenant + admin user (admin@dapplepot.dev / changeme123)
+│
+│   # SQL migrations — applied in order by scripts/migrate.ts
+├── migrations/
+│   ├── 001_tenants.sql
+│   ├── 002_agents.sql
+│   ├── 003_channels_table.sql
+│   ├── 004_users_table.sql
+│   ├── 005_invites_table.sql
+│   ├── 006_password_resets_table.sql
+│   ├── 007_refresh_tokens_table.sql
+│   └── 008_sdk_keys_raw.sql
 │
 │   # Application entry
 ├── src/

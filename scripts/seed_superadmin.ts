@@ -16,7 +16,8 @@ const SUPERADMIN_PASSWORD = 'superadmin123'
 const SUPERADMIN_NAME     = 'Platform Superadmin'
 
 async function seed() {
-    const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require' })
+    const ssl = process.env.POSTGRES_SSL === 'true' ? 'require' : false
+    const sql = postgres(process.env.POSTGRES_URL!, { ssl })
 
     const passwordHash = hashSync(SUPERADMIN_PASSWORD, 12)
 

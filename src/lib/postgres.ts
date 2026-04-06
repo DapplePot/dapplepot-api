@@ -1,12 +1,8 @@
 import postgres from 'postgres'
 import { env } from '../env.js'
 
-const sql = postgres(env.POSTGRES_URL, {
-  max: 20,
-  idle_timeout: 30,
-  connect_timeout: 10,
-  ssl: 'require',
-})
+const ssl = process.env.POSTGRES_SSL === 'true' ? 'require' : false
+const sql = postgres(process.env.POSTGRES_URL!, { ssl })
 
 export async function queryRow<T extends Record<string, unknown>>(
   query: string,

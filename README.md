@@ -117,6 +117,16 @@ dapplepot_api/
 │   ├── seed_superadmin.ts          ← seeds platform superadmin user (tenant_id = NULL)
 │   └── seed_admin.ts               ← seeds dapplepot_dev tenant + scoped admin user
 │
+├── migrations/                     ← ordered SQL files applied by scripts/migrate.ts
+│   ├── 001_tenants.sql
+│   ├── 002_agents.sql
+│   ├── 003_channels_table.sql
+│   ├── 004_users_table.sql
+│   ├── 005_invites_table.sql
+│   ├── 006_password_resets_table.sql
+│   ├── 007_refresh_tokens_table.sql
+│   └── 008_sdk_keys_raw.sql
+│
 └── src/
     ├── index.ts                    ← server entry: serve() + SIGTERM handler
     ├── app.ts                      ← Hono app, middleware, routes, error handlers
@@ -221,7 +231,8 @@ Key variables:
 
 | Variable | Example | Notes |
 |----------|---------|-------|
-| `POSTGRES_URL` | `postgresql://user:pass@host/db` | Aiven/cloud — SSL required |
+| `POSTGRES_URL` | `postgresql://user:pass@host/db` | Local Docker or Aiven/cloud |
+| `POSTGRES_SSL` | `true` | Set to `true` for cloud/Aiven; omit for local Docker |
 | `CLICKHOUSE_HOST` | `abc.clickhouse.cloud` | Hostname only, no `https://` |
 | `CLICKHOUSE_PORT` | `8443` | Default for ClickHouse Cloud |
 | `REDIS_URL` | `redis://localhost:6379` | |
@@ -238,8 +249,9 @@ Key variables:
 pnpm migrate
 ```
 
-Reads `POSTGRES_URL` from `.env`, connects over SSL, and tracks applied files in
-a `_migrations` table. All files are idempotent — safe to re-run.
+Reads `POSTGRES_URL` from `.env` and tracks applied files in a `_migrations`
+table. SSL is enabled only when `POSTGRES_SSL=true` — omit it for local Docker.
+All files are idempotent — safe to re-run.
 
 > Ensure `dapplepot_pipeline` has run its own migrations first so the `alerts` table exists before this service's routes query it.
 
