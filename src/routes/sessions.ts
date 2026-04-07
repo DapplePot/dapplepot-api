@@ -55,7 +55,7 @@ sessionsRouter.get('/', async (c) => {
 sessionsRouter.get('/:id/trace', async (c) => {
   const tenantId = c.get('tenantId')
   const sessionId = c.req.param('id')
-  const afterSeq = Number(c.req.query('after_seq') ?? 0)
+  const afterSeq = Number(c.req.query('after_seq') ?? -1)
   const limit = Math.min(Number(c.req.query('limit') ?? 100), 200)
 
   // Verify session ownership in PG first — an open session may legitimately have

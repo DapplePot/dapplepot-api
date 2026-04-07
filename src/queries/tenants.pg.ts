@@ -54,6 +54,35 @@ export interface TenantListItem {
     userCount: number
 }
 
+export interface TenantItem {
+    tenantId: string
+    name: string
+    enabled: boolean
+    tokenBudget: number | null
+    rateLimit: number | null
+    createdAt: string
+    updatedAt: string
+}
+
+export async function getTenantById(tenantId: string): Promise<TenantItem | null> {
+    const row = await queryRows<TenantRow>(
+        `SELECT tenant_id, name, enabled, token_budget, rate_limit, created_at, updated_at
+         FROM tenants WHERE tenant_id = $1 LIMIT 1`,
+        [tenantId]
+    )
+    const r = row[0]
+    if (!r) return null
+    return {
+        tenantId: r.tenant_id,
+        name: r.name,
+        enabled: r.enabled,
+        tokenBudget: r.token_budget,
+        rateLimit: r.rate_limit,
+        createdAt: toIso(r.created_at),
+        updatedAt: toIso(r.updated_at),
+    }
+}
+
 export async function listTenants(): Promise<TenantListItem[]> {
     const rows = await queryRows<TenantListRow>(
         `SELECT

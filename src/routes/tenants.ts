@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs'
 const { hash: bcryptHash } = bcrypt
 import { jwtAuth } from '../middleware/auth.js'
 import { requireRole } from '../middleware/authorize.js'
-import { listTenants, onboardTenant } from '../queries/tenants.pg.js'
+import { getTenantById, listTenants, onboardTenant } from '../queries/tenants.pg.js'
 
 export const tenantsRouter = new Hono()
 
@@ -19,6 +19,21 @@ const OnboardSchema = z.object({
         name: z.string().min(1, 'admin.name is required'),
         password: z.string().min(8, 'admin.password must be at least 8 characters'),
     }),
+})
+
+// GET /v1/tenants/:id — superadmin or the tenant's own users
+tenantsRouter.get('/:id', jwtAuth, async (c) => {
+    const id = c.req.param('id')
+    const role = c.get('role')
+    const callerTenantId = c.get('tenantId')
+
+    if (role !== 'superadmin' && callerTenantId !== id) {
+        return c.json({ error: 'Forbidden' }, 403)
+    }
+
+    const tenant = await getTenantById(id)
+    if (!tenant) return c.json({ error: 'Tenant not found' }, 404)
+    return c.json(tenant)
 })
 
 // GET /v1/tenants — superadmin only

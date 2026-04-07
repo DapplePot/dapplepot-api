@@ -95,7 +95,7 @@ export async function getTracePage(
     FROM obs_events
     WHERE tenant_id      = {tenantId: String}
       AND session_id     = {sessionId: UUID}
-      AND sequence_index > {afterSeq: UInt32}
+      AND sequence_index > {afterSeq: Int32}
     ORDER BY sequence_index ASC
     LIMIT {limit: UInt32}`,
     { tenantId, sessionId, afterSeq, limit: fetchLimit + 1 }
