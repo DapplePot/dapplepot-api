@@ -1,5 +1,5 @@
 import { queryRow, queryRows, queryValue } from '../lib/postgres.js'
-import type { AlertSummary, AlertDetail, AlertDelivery, AlertStats } from '../types/alert.js'
+import type { AlertSummary, AlertDetail, AlertDelivery, AlertDetailPayload, AlertStats } from '../types/alert.js'
 import type { AlertListParams } from '../types/common.js'
 
 function mapAlertSummary(r: Record<string, unknown>): AlertSummary {
@@ -8,6 +8,7 @@ function mapAlertSummary(r: Record<string, unknown>): AlertSummary {
     ruleId: (r['rule_id'] as string | null) ?? null,
     ruleName: (r['rule_name'] as string) ?? '',
     ruleType: (r['rule_type'] as string) ?? '',
+    source: ((r['source'] as string | null) ?? 'policy') as 'security' | 'policy',
     sessionId: (r['session_id'] as string | null) ?? null,
     agentId: (r['agent_id'] as string | null) ?? null,
     severity: r['severity'] as AlertSummary['severity'],
@@ -38,6 +39,7 @@ export async function getAlertList(
       a.payload->>'title'     AS title,
       a.payload->>'message'   AS message,
       a.payload->>'rule_type' AS rule_type,
+      COALESCE(a.payload->>'source', 'policy') AS source,
       s.agent_id
     FROM alerts a
     LEFT JOIN sessions s ON s.session_id = a.session_id
@@ -48,8 +50,9 @@ export async function getAlertList(
       AND ($5::uuid        IS NULL OR s.agent_id = $5)
       AND ($6::timestamptz IS NULL OR a.triggered_at >= $6)
       AND ($7::timestamptz IS NULL OR a.triggered_at <  $7)
+      AND ($8::text        IS NULL OR COALESCE(a.payload->>'source', 'policy') = $8)
     ORDER BY a.triggered_at DESC
-    LIMIT $8 OFFSET $9`,
+    LIMIT $9 OFFSET $10`,
     [
       tenantId,
       params.severity ?? null,
@@ -58,6 +61,7 @@ export async function getAlertList(
       params.agentId ?? null,
       params.since ?? null,
       params.until ?? null,
+      params.source ?? null,
       limit,
       offset,
     ]
@@ -73,7 +77,8 @@ export async function getAlertList(
       AND ($4::uuid        IS NULL OR a.rule_id  = $4)
       AND ($5::uuid        IS NULL OR s.agent_id = $5)
       AND ($6::timestamptz IS NULL OR a.triggered_at >= $6)
-      AND ($7::timestamptz IS NULL OR a.triggered_at <  $7)`,
+      AND ($7::timestamptz IS NULL OR a.triggered_at <  $7)
+      AND ($8::text        IS NULL OR COALESCE(a.payload->>'source', 'policy') = $8)`,
     [
       tenantId,
       params.severity ?? null,
@@ -82,6 +87,7 @@ export async function getAlertList(
       params.agentId ?? null,
       params.since ?? null,
       params.until ?? null,
+      params.source ?? null,
     ]
   )
 
@@ -99,6 +105,7 @@ export async function getAlertDetail(
       a.payload->>'title'     AS title,
       a.payload->>'message'   AS message,
       a.payload->>'rule_type' AS rule_type,
+      COALESCE(a.payload->>'source', 'policy') AS source,
       s.agent_id
     FROM alerts a
     LEFT JOIN sessions s ON s.session_id = a.session_id
@@ -122,7 +129,7 @@ export async function getAlertDetail(
   return {
     ...mapAlertSummary(row),
     dedupKey: (row['dedup_key'] as string) ?? '',
-    payload: (row['payload'] as Record<string, unknown>) ?? {},
+    payload: (row['payload'] as AlertDetailPayload) ?? {},
     deliveries: deliveries.map((d): AlertDelivery => ({
       deliveryId: d['delivery_id'] as string,
       channelId: d['channel_id'] as string,

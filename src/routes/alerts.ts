@@ -38,6 +38,7 @@ alertsRouter.get('/', async (c) => {
     ...(q['agentId']  ? { agentId: q['agentId'] } : {}),
     ...(q['since']    ? { since: q['since'] }     : {}),
     ...(q['until']    ? { until: q['until'] }     : {}),
+    ...(q['source']   ? { source: q['source'] as 'security' | 'policy' } : {}),
   })
 
   const limit = Math.min(q['limit'] ? Number(q['limit']) : 20, 100)

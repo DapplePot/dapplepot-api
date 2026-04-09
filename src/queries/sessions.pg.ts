@@ -169,6 +169,7 @@ export async function getSessionAlerts(
       a.payload->>'title'      AS title,
       a.payload->>'message'    AS message,
       a.payload->>'rule_type'  AS rule_type,
+      COALESCE(a.payload->>'source', 'policy') AS source,
       s.agent_id
     FROM alerts a
     LEFT JOIN sessions s ON s.session_id = a.session_id
@@ -183,6 +184,7 @@ export async function getSessionAlerts(
     ruleId: r.rule_id,
     ruleName: r.rule_name ?? '',
     ruleType: r.rule_type ?? '',
+    source: (((r as Record<string, unknown>)['source'] as string | null) ?? 'policy') as 'security' | 'policy',
     sessionId,
     agentId: r.agent_id,
     severity: r.severity as AlertSummary['severity'],

@@ -34,6 +34,7 @@ export interface AlertListParams extends ListParams {
   status?: 'open' | 'acknowledged' | 'resolved'
   ruleId?: string
   agentId?: string
+  source?: 'security' | 'policy'
 }
 
 export class NotFoundError extends Error {

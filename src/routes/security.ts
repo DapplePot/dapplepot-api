@@ -10,7 +10,8 @@ import {
 } from '../lib/cache.js'
 import {
   getSecurityOverview, getSessionScore,
-  getSessionFindings, getRemediationStats
+  getSessionFindings, getRemediationStats, getTopAgents, getAgentProfile,
+  getSignalRegistry,
 } from '../queries/security.pg.js'
 
 type Variables = { tenantId: string; userId: string }
@@ -63,6 +64,40 @@ securityRouter.get('/remediation', async (c) => {
     () => getRemediationStats(tenantId, windowHours)
   )
   return c.json({ remediation: cards })
+})
+
+// GET /v1/security/agents — top agents by composite risk score
+securityRouter.get('/agents', async (c) => {
+  const tenantId = c.get('tenantId')
+  const agents   = await cached(
+    `dp:api:security:agents:${tenantId}`,
+    CACHE_TTL_SECURITY_OVERVIEW,
+    () => getTopAgents(tenantId)
+  )
+  return c.json({ agents })
+})
+
+// GET /v1/security/agents/:id — full security profile for a single agent
+securityRouter.get('/agents/:id', async (c) => {
+  const tenantId = c.get('tenantId')
+  const agentId  = c.req.param('id')
+  const profile  = await cached(
+    `dp:api:security:agent:${tenantId}:${agentId}`,
+    CACHE_TTL_SESSION_SCORE,
+    () => getAgentProfile(tenantId, agentId),
+  )
+  if (!profile) return c.json({ error: { code: 'NOT_FOUND', message: 'No security data for this agent' } }, 404)
+  return c.json(profile)
+})
+
+// GET /v1/security/signals — full signal registry (121 non-excluded sub-checks)
+securityRouter.get('/signals', async (c) => {
+  const signals = await cached(
+    'dp:api:security:signals',
+    CACHE_TTL_REMEDIATION,
+    () => getSignalRegistry()
+  )
+  return c.json({ signals })
 })
 
 // GET /v1/security/signatures — list tenant's injection signatures

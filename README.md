@@ -801,6 +801,86 @@ Side effects: same three-step cache invalidation as POST
 Data written by `dapplepot_security` (Zone 6). This service reads and serves
 the results — it does not run any detection or scoring itself.
 
+#### OWASP LLM Top 10 findings surfaced
+
+| Signal(s) | OWASP ID | Threat | Detection phase |
+|---|---|---|---|
+| INJ-001 – INJ-005 | LLM01 | Prompt injection | Online — regex + tenant blocklist |
+| OUT-001 | LLM02 | Insecure output handling | Online — LCS passthrough ratio |
+| L-10 | LLM04 | Model denial of service | Post-session — token spike (>4σ) |
+| PII-001 – PII-006 | LLM06 | Sensitive info disclosure | Online — PII scanner |
+| L-06 | LLM07 | Insecure plugin design | Post-session — tool scope check |
+| L-05, L-06, L-07 | LLM08 | Excessive agency | Post-session |
+| L-08 | LLM09 | Overreliance | Post-session — HITL gap |
+| L-09 | LLM10 | Model theft | Post-session — cross-session probe |
+
+#### Risk score model
+
+10 signals, additive, capped at 100. Scoring runs within ~30s of `graph_end`.
+
+| Signal | Max pts | Trigger |
+|--------|---------|---------|
+| L-01 | 40 | Confirmed injection (INJ-001/002) |
+| L-02 | 20 | Indirect injection vector (INJ-004) |
+| L-03 | 30 | Output passthrough to tool (OUT-001) |
+| L-04 | 35 | PII in LLM or tool output |
+| L-05 | 20 | Tool call count > p90 baseline |
+| L-06 | 25 | Tool invoked outside declared manifest |
+| L-07 | 30 | Write/delete tool on read-only intent session |
+| L-08 | 15 | High-stakes action without HITL interrupt |
+| L-09 | 10 | Cross-session model theft probe |
+| L-10 | 10 | Token count > 4σ above agent baseline |
+
+| Band | Score | Alert behaviour |
+|------|-------|-----------------|
+| `clean` | 0–19 | Logged only |
+| `low` | 20–39 | Logged only |
+| `medium` | 40–64 | Warning alert (platform inbox) |
+| `high` | 65–84 | Critical alert → webhook / Slack / PD |
+| `critical` | 85–100 | Critical alert → all channels |
+
+#### TypeScript types (`src/types/security.ts`)
+
+```typescript
+type RiskBand = 'clean' | 'low' | 'medium' | 'high' | 'critical'
+
+interface SessionRiskScore {
+  sessionId: string; tenantId: string; agentId: string | null
+  riskScore: number          // 0–100
+  riskBand: RiskBand
+  signalCount: number
+  signalIds: string[]        // ["L-01", "L-03", "L-04"]
+  scorerVersion: string; scoredAt: string
+}
+
+interface SecurityFinding {
+  findingId: string; sessionId: string; eventId: string; eventType: string
+  signalId: string           // INJ-001, OUT-001, PII-004, L-06, etc.
+  sigType: string            // injection | passthrough | pii | agency | tool_scope
+  owaspId: string            // LLM01 … LLM10
+  severity: 'critical' | 'warning' | 'info'
+  matchedText: string | null // always redacted before storage
+  detail: string | null
+  scoreContrib: number
+  detectionPhase: 'online' | 'post_session'
+  createdAt: string
+}
+
+interface SecurityOverview {
+  window: string; sessionsScored: number; highCriticalCount: number
+  avgRiskScore: number; topSignalId: string | null; topSignalCount: number
+  bandDistribution: Record<RiskBand, number>
+  owaspFrequency: Array<{ owaspId: string; count: number }>
+  highRiskSessions: Array<{ sessionId: string; agentId: string; riskScore: number; riskBand: RiskBand; signalIds: string[] }>
+}
+
+interface RemediationCard {
+  signalId: string; owaspId: string; title: string; description: string
+  fixSteps: string[]; sdkSnippet: string | null
+  frequency: number   // how many times this signal fired in the window
+}
+```
+
 #### `GET /v1/security/overview`
 
 ```
