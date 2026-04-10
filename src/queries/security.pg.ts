@@ -1,6 +1,7 @@
 import type {
   SecurityOverview, SessionRiskScore, SecurityFinding, RemediationCard, AgentRiskEntry,
-  AgentProfile, AgentSignalBreakdown, AgentRecentSession, SignalRegistry,
+  AgentProfile, AgentSignalBreakdown, AgentRecentSession, SignalRegistry, ConfidenceTier,
+  TrustTrend,
 } from '../types/security.js'
 import { queryRow, queryRows } from '../lib/postgres.js'
 
@@ -73,6 +74,7 @@ export async function getSecurityOverview(
     `SELECT agent_id, session_count, avg_llm_score, avg_asi_score,
             max_llm_score, max_asi_score,
             ROUND((avg_llm_score + avg_asi_score) / 2, 2) AS composite_risk_score,
+            trust_score, trust_trend,
             last_scored_at
      FROM agent_risk_scores
      WHERE tenant_id = $1
@@ -111,6 +113,8 @@ export async function getSecurityOverview(
       maxLlmScore:   r.max_llm_score,
       maxAsiScore:   r.max_asi_score,
       compositeRisk: Number(r.composite_risk_score),
+      trustScore:    r.trust_score     ?? undefined,
+      trustTrend:    r.trust_trend     ?? undefined,
       lastScoredAt:  r.last_scored_at.toISOString(),
     })),
   }
@@ -122,28 +126,45 @@ export async function getSessionScore(
 ): Promise<SessionRiskScore | null> {
   const row = await queryRow<any>(
     `SELECT
-        session_id, tenant_id, agent_id,
-        llm_score, llm_band,
-        asi_score, asi_band,
-        llm_signal_status, asi_signal_status,
-        scorer_version, scored_at
-     FROM session_risk_scores
-     WHERE session_id = $1 AND tenant_id = $2`,
+        s.session_id, s.tenant_id, s.agent_id,
+        s.llm_score, s.llm_band,
+        s.asi_score, s.asi_band,
+        s.llm_signal_status,
+        s.asi_signal_status,
+        s.v3_llm_composite,
+        s.scorer_version, s.scored_at,
+        ar.trust_score, ar.trust_trend
+     FROM session_risk_scores s
+     LEFT JOIN agent_risk_scores ar
+       ON ar.agent_id = s.agent_id AND ar.tenant_id = s.tenant_id
+     WHERE s.session_id = $1 AND s.tenant_id = $2`,
     [sessionId, tenantId]
   )
   if (!row) return null
+
+  // Extract v3 composite fields if present
+  const v3 = row.v3_llm_composite as Record<string, unknown> | null
+  const attackChains  = (v3?.attack_chains_detected as string[]  | undefined) ?? undefined
+  const amplification = (v3?.amplification_factor  as number    | undefined) ?? undefined
+  const confidenceBand = (v3?.confidence_band      as string    | undefined) ?? undefined
+
   return {
-    sessionId:        row.session_id,
-    tenantId:         row.tenant_id,
-    agentId:          row.agent_id,
-    llmScore:         row.llm_score,
-    llmBand:          row.llm_band,
-    asiScore:         row.asi_score    ?? 0,
-    asiBand:          row.asi_band     ?? 'clean',
-    llmSignalStatus:  row.llm_signal_status ?? {},
-    asiSignalStatus:  row.asi_signal_status ?? {},
-    scorerVersion:    row.scorer_version,
-    scoredAt:         row.scored_at.toISOString(),
+    sessionId:             row.session_id,
+    tenantId:              row.tenant_id,
+    agentId:               row.agent_id,
+    llmScore:              row.llm_score,
+    llmBand:               row.llm_band,
+    asiScore:              row.asi_score    ?? 0,
+    asiBand:               row.asi_band     ?? 'clean',
+    llmSignalStatus:       row.llm_signal_status ?? {},
+    asiSignalStatus:       row.asi_signal_status ?? {},
+    attackChainsDetected:  attackChains,
+    amplification,
+    confidenceBand,
+    trustScore:            row.trust_score  ?? undefined,
+    trustTrend:            row.trust_trend  ?? undefined,
+    scorerVersion:         row.scorer_version,
+    scoredAt:              row.scored_at.toISOString(),
   }
 }
 
@@ -156,28 +177,31 @@ export async function getSessionFindings(
         finding_id, session_id, event_id, event_type,
         framework, owasp_signal_id, sub_check_id, check_score, check_label,
         category, severity, matched_text, detail,
-        detection_phase, created_at
+        detection_phase, confidence_tier, confidence,
+        created_at
      FROM security_findings
      WHERE session_id = $1 AND tenant_id = $2
      ORDER BY check_score DESC, created_at ASC`,
     [sessionId, tenantId]
   )
   return rows.map(r => ({
-    findingId:      r.finding_id,
-    sessionId:      r.session_id,
-    eventId:        r.event_id,
-    eventType:      r.event_type,
-    framework:      r.framework,
-    owaspSignalId:  r.owasp_signal_id,
-    subCheckId:     r.sub_check_id,
-    checkScore:     r.check_score,
-    checkLabel:     r.check_label,
-    category:       r.category,
-    severity:       r.severity,
-    matchedText:    r.matched_text,
-    detail:         r.detail,
-    detectionPhase: r.detection_phase,
-    createdAt:      r.created_at.toISOString(),
+    findingId:       r.finding_id,
+    sessionId:       r.session_id,
+    eventId:         r.event_id,
+    eventType:       r.event_type,
+    framework:       r.framework,
+    owaspSignalId:   r.owasp_signal_id,
+    subCheckId:      r.sub_check_id,
+    checkScore:      r.check_score,
+    checkLabel:      r.check_label,
+    category:        r.category,
+    severity:        r.severity,
+    matchedText:     r.matched_text,
+    detail:          r.detail,
+    detectionPhase:  r.detection_phase,
+    confidenceTier:  r.confidence_tier  as ConfidenceTier | undefined ?? undefined,
+    confidence:      r.confidence       != null ? Number(r.confidence) : undefined,
+    createdAt:       r.created_at.toISOString(),
   }))
 }
 
@@ -210,6 +234,7 @@ export async function getTopAgents(tenantId: string): Promise<AgentRiskEntry[]> 
     `SELECT agent_id, session_count, avg_llm_score, avg_asi_score,
             max_llm_score, max_asi_score,
             ROUND((avg_llm_score + avg_asi_score) / 2, 2) AS composite_risk_score,
+            trust_score, trust_trend,
             last_scored_at
      FROM agent_risk_scores
      WHERE tenant_id = $1
@@ -225,6 +250,8 @@ export async function getTopAgents(tenantId: string): Promise<AgentRiskEntry[]> 
     maxLlmScore:   r.max_llm_score,
     maxAsiScore:   r.max_asi_score,
     compositeRisk: Number(r.composite_risk_score),
+    trustScore:    r.trust_score  ?? undefined,
+    trustTrend:    r.trust_trend  as TrustTrend | undefined ?? undefined,
     lastScoredAt:  r.last_scored_at.toISOString(),
   }))
 }
@@ -238,6 +265,7 @@ export async function getAgentProfile(
             ar.session_count, ar.avg_llm_score, ar.avg_asi_score,
             ar.max_llm_score, ar.max_asi_score,
             ROUND(COALESCE((ar.avg_llm_score + ar.avg_asi_score) / 2, 0), 2) AS composite_risk,
+            ar.trust_score, ar.trust_trend,
             ar.last_scored_at
      FROM agents a
      LEFT JOIN agent_risk_scores ar ON ar.agent_id = a.agent_id AND ar.tenant_id = a.tenant_id
@@ -293,6 +321,8 @@ export async function getAgentProfile(
     maxLlmScore:   agg.max_llm_score   ?? 0,
     maxAsiScore:   agg.max_asi_score   ?? 0,
     compositeRisk: Number(agg.composite_risk ?? 0),
+    trustScore:    agg.trust_score ?? undefined,
+    trustTrend:    agg.trust_trend as TrustTrend | undefined ?? undefined,
     lastScoredAt:  agg.last_scored_at ? new Date(agg.last_scored_at).toISOString() : null,
     signalBreakdown,
     recentSessions,
@@ -304,7 +334,8 @@ export async function getSignalRegistry(): Promise<SignalRegistry[]> {
     `SELECT
         owasp_signal_id, sub_check_id, check_label,
         framework, signal_number, category,
-        detection_phase, check_score, severity
+        detection_phase, check_score, severity,
+        confidence_tier, excluded
      FROM signal_registry
      ORDER BY framework, signal_number, sub_check_id`,
     []
@@ -319,6 +350,8 @@ export async function getSignalRegistry(): Promise<SignalRegistry[]> {
     detectionPhase: r.detection_phase,
     checkScore:     r.check_score,
     severity:       r.severity,
+    confidenceTier: r.confidence_tier as ConfidenceTier ?? 'high',
+    excluded:       r.excluded ?? false,
   }))
 }
 

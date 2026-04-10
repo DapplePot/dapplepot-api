@@ -3,64 +3,84 @@
 
 export type RiskBand = 'clean' | 'low' | 'medium' | 'high' | 'critical'
 
+export type ConfidenceTier = 'deterministic' | 'high' | 'medium' | 'low' | 'skeletal'
+
+export type TrustTrend = 'improving' | 'stable' | 'degrading'
+
 /** Per sub-check result within an OW signal (scorer v2+). */
 export interface SubCheckStatus {
-  status:  'fired' | 'clean'
-  score:   number
-  label:   string
-  detail:  string | null
+  status:         'fired' | 'clean'
+  score:          number            // raw check_score (0–100)
+  effectiveScore?: number           // v3: score × confidence_weight
+  confidenceTier?: ConfidenceTier   // v3: deterministic | high | medium | low | skeletal
+  label:          string
+  detail:         string | null
 }
 
 /** Per OW-signal result with sub-check breakdown (scorer v2+). */
 export interface OwSignalStatus {
-  status:      'fired' | 'clean'
-  score:       number                          // max(sub-check scores)
-  sub_checks:  Record<string, SubCheckStatus> // keyed by sub_check_id e.g. "PI-01a"
+  status:         'fired' | 'clean'
+  rawScore:       number                          // max(check_score) of fired sub-checks
+  effectiveScore?: number                         // v3: max(check_score × confidence_weight)
+  sub_checks:     Record<string, SubCheckStatus>  // keyed by sub_check_id e.g. "PI-01a"
+  /** @deprecated use rawScore — kept for v2 payload backward compat */
+  score?:         number
 }
 
 export interface SessionRiskScore {
-  sessionId:        string
-  tenantId:         string
-  agentId:          string | null
-  llmScore:         number          // LLM composite score 0–100
-  llmBand:          RiskBand
-  asiScore:         number          // ASI composite score 0–100
-  asiBand:          RiskBand
-  llmSignalStatus:  Record<string, OwSignalStatus> // keyed by "OW-LLM01"
-  asiSignalStatus:  Record<string, OwSignalStatus> // keyed by "OW-ASI05"
-  scorerVersion:    string          // "2.0.0"
-  scoredAt:         string          // ISO 8601
+  sessionId:              string
+  tenantId:               string
+  agentId:                string | null
+  llmScore:               number          // LLM composite score 0–100
+  llmBand:                RiskBand
+  asiScore:               number          // ASI composite score 0–100
+  asiBand:                RiskBand
+  llmSignalStatus:        Record<string, OwSignalStatus> // keyed by "OW-LLM01"
+  asiSignalStatus:        Record<string, OwSignalStatus> // keyed by "OW-ASI05"
+  // v3 additions
+  attackChainsDetected?:  string[]        // e.g. ["indirect_injection_to_exfil"]
+  amplification?:         number          // e.g. 1.25 (1.0 = no chain fired)
+  confidenceBand?:        string          // "high" | "medium" etc.
+  trustScore?:            number          // agent trust score 0–100
+  trustTrend?:            TrustTrend
+  scorerVersion:          string          // "3.0.0"
+  scoredAt:               string          // ISO 8601
 }
 
 export interface SecurityFinding {
-  findingId:      string
-  sessionId:      string
-  eventId:        string
-  eventType:      string
-  framework:      string            // "LLM" | "ASI" — derived from owasp_signal_id
-  owaspSignalId:  string            // "OW-LLM01"
-  subCheckId:     string            // "PI-01a"
-  checkScore:     number            // 0–100 individual sub-check weight
-  checkLabel:     string            // "Role-override phrase match"
-  category:       string            // "prompt_injection" | "data_disclosure" | etc.
-  severity:       'critical' | 'high' | 'medium' | 'low'
-  matchedText:    string | null     // always redacted before storage
-  detail:         string | null
-  detectionPhase: 'online' | 'post_session'
-  createdAt:      string
+  findingId:       string
+  sessionId:       string
+  eventId:         string
+  eventType:       string
+  framework:       string            // "LLM" | "ASI" — derived from owasp_signal_id
+  owaspSignalId:   string            // "OW-LLM01"
+  subCheckId:      string            // "PI-01a"
+  checkScore:      number            // 0–100 individual sub-check weight
+  checkLabel:      string            // "Role-override phrase match"
+  category:        string            // "prompt_injection" | "data_disclosure" | etc.
+  severity:        'critical' | 'high' | 'medium' | 'low'
+  matchedText:     string | null     // always redacted before storage
+  detail:          string | null
+  detectionPhase:  'online' | 'post_session' | 'cross_session'
+  // v3 additions
+  confidenceTier?: ConfidenceTier
+  confidence?:     number            // 0.0–1.0 (confidence_weight)
+  createdAt:       string
 }
 
 /** Row from the signal_registry table. */
 export interface SignalRegistry {
-  owaspSignalId:   string          // "OW-LLM01"
-  subCheckId:      string          // "PI-01a"
-  checkLabel:      string          // "Role-override phrase match"
-  framework:       string          // "LLM" | "ASI"
-  signalNumber:    number          // 1–20
-  category:        string          // threat category e.g. "prompt_injection"
-  detectionPhase:  'online' | 'post_session' | 'both'
+  owaspSignalId:   string                  // "OW-LLM01"
+  subCheckId:      string                  // "PI-01a"
+  checkLabel:      string                  // "Role-override phrase match"
+  framework:       string                  // "LLM" | "ASI"
+  signalNumber:    number                  // 1–20
+  category:        string                  // threat category e.g. "prompt_injection"
+  detectionPhase:  'online' | 'post_session' | 'both' | 'cross_session' | 'excluded'
   checkScore:      number
   severity:        string
+  confidenceTier:  ConfidenceTier          // v3
+  excluded:        boolean                 // v3: true = pre-runtime, cannot detect
 }
 
 export interface AgentRiskEntry {
@@ -71,6 +91,9 @@ export interface AgentRiskEntry {
   maxLlmScore:   number
   maxAsiScore:   number
   compositeRisk: number
+  // v3 trust
+  trustScore?:   number
+  trustTrend?:   TrustTrend
   lastScoredAt:  string
 }
 
@@ -131,6 +154,9 @@ export interface AgentProfile {
   maxLlmScore:     number
   maxAsiScore:     number
   compositeRisk:   number
+  // v3 trust
+  trustScore?:     number
+  trustTrend?:     TrustTrend
   lastScoredAt:    string | null
   signalBreakdown: AgentSignalBreakdown[]
   recentSessions:  AgentRecentSession[]

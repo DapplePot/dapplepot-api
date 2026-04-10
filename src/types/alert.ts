@@ -4,15 +4,18 @@ export type AlertStatus = 'open' | 'acknowledged' | 'resolved'
 
 /** A single finding entry in an alert payload (scorer v2+). */
 export interface AlertTopFinding {
-  owasp_signal_id: string         // "OW-LLM01"
-  sub_check_id:    string         // "PI-01a"
-  check_label:     string         // "Role-override phrase match"
-  check_score:     number         // 0–100
-  severity:        string
-  detail:          string | null
+  owasp_signal_id:  string         // "OW-LLM01"
+  sub_check_id:     string         // "PI-01a"
+  check_label:      string         // "Role-override phrase match"
+  check_score:      number         // 0–100
+  severity:         string
+  detail:           string | null
+  // v3 additions
+  confidence_tier?: string         // "deterministic" | "high" | "medium" | "low" | "skeletal"
+  effective_score?: number         // check_score × confidence_weight
 }
 
-/** Typed alert payload for security alerts (scorer v2+). */
+/** Typed alert payload for security alerts (scorer v3+). */
 export interface AlertDetailPayload {
   title?:                   string
   message?:                 string
@@ -35,8 +38,14 @@ export interface AlertDetailPayload {
     asi_signals_clean?: number
   }
   top_findings?:            AlertTopFinding[]
-  signal_taxonomy_version?: string            // "2.0"
-  scorer_version?:          string
+  // v3 additions
+  attack_chains_detected?:  string[]          // e.g. ["indirect_injection_to_exfil"]
+  amplification?:           number            // e.g. 1.25 (1.0 = no chain)
+  confidence_band?:         string            // "high" | "medium" etc.
+  trust_score?:             number            // agent trust 0–100
+  trust_trend?:             string            // "improving" | "stable" | "degrading"
+  signal_taxonomy_version?: string            // "3.0"
+  scorer_version?:          string            // "3.0.0"
   [key: string]:            unknown           // allow extra fields
 }
 
