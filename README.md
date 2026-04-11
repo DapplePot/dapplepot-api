@@ -59,7 +59,15 @@ dapplepot_ui (React dashboard)
   └── GET  /v1/security/sessions/:id/findings security findings for a session
   └── GET  /v1/security/remediation     top firing signals + fix guidance
   └── GET  /v1/security/signatures      active injection signatures for tenant
+  └── GET  /v1/security/agents          top agents by composite risk score
+  └── GET  /v1/security/agents/:id      full security profile for a single agent
+  └── GET  /v1/security/signals         full signal registry (121 non-excluded sub-checks)
+  └── GET  /v1/security/agents/:id/subcheck-config    per-subcheck online detection toggle map
+  └── PUT  /v1/security/agents/:id/subcheck-config    upsert one sub-check online override
+  └── GET  /v1/security/agents/:id/alert-config       composite + per-signal threshold overrides
+  └── PUT  /v1/security/agents/:id/alert-config       update composite or per-signal threshold
   └── GET  /v1/tenants                   list all tenants with admin user + user count (superadmin only)
+  └── GET  /v1/tenants/:id              get tenant by ID (superadmin or own tenant)
   └── POST /v1/tenants/onboard          create tenant + admin user atomically (superadmin only)
   └── GET  /v1/agents                   list agents for caller's tenant
   └── POST /v1/agents                   create agent (admin only)
@@ -125,7 +133,10 @@ dapplepot_api/
 │   ├── 005_invites_table.sql
 │   ├── 006_password_resets_table.sql
 │   ├── 007_refresh_tokens_table.sql
-│   └── 008_sdk_keys_raw.sql
+│   ├── 008_sdk_keys_raw.sql
+│   ├── 009_agent_subcheck_overrides.sql
+│   ├── 010_agent_alert_config.sql
+│   └── 011_split_composite_thresholds.sql
 │
 └── src/
     ├── index.ts                    ← server entry: serve() + SIGTERM handler
@@ -170,7 +181,8 @@ dapplepot_api/
     │   ├── alerts.pg.ts            ← alert feed, detail, stats, status update
     │   ├── rules.pg.ts             ← rule CRUD + dry-run
     │   ├── channels.pg.ts          ← channel CRUD
-    │   ├── security.pg.ts          ← overview, session score, findings, remediation stats (Zone 6)
+    │   ├── security.pg.ts          ← overview, session score, findings, remediation, agents, signal registry,
+│   │                               subcheck overrides, alert config (Zone 6)
     │   ├── tenants.pg.ts           ← listTenants(), onboardTenant() — transaction: tenant + admin user + sdk_key
     │   ├── agents.pg.ts            ← listAgents, createAgent
     │   ├── sdk-keys.pg.ts          ← listSdkKeys (masked_key from DB), revealSdkKey → raw_key (admin)
@@ -196,7 +208,7 @@ dapplepot_api/
         ├── control.ts              ← kill-switch, interrupt, SDK command poll
         ├── rules.ts                ← GET/POST/PUT rules
         ├── channels.ts             ← GET/POST/PUT channels
-        └── security.ts             ← 5 security endpoints (Zone 6)
+        └── security.ts             ← 12 security endpoints (Zone 6)
 ```
 
 ---
@@ -516,6 +528,14 @@ Errors:   403 not admin, 404 key not found or not in tenant
 
 ### Tenants
 
+#### `GET /v1/tenants/:id` — superadmin or own tenant
+
+```
+Response: TenantListItem (same shape as list items)
+Errors:   403 if caller is not superadmin and :id != caller's own tenant_id
+          404 if tenant not found
+```
+
 #### `GET /v1/tenants` — superadmin only
 
 ```
@@ -691,7 +711,8 @@ Response: SessionFunnel   — Postgres session counts by status
 #### `GET /v1/alerts`
 
 ```
-Query params: page, limit, severity, status, ruleId, agentId, since, until
+Query params: page, limit, severity, status, ruleId, agentId, since, until,
+              source ('security' | 'policy')
 Response: Paginated<AlertSummary>
 ```
 
@@ -926,6 +947,66 @@ Cache: 300s per tenant+window
 ```
 Response: { signatures: InjectionSignature[] }
   Active injection signatures for this tenant (tenant-specific + platform-wide)
+```
+
+#### `GET /v1/security/agents`
+
+```
+Response: { agents: AgentSecuritySummary[] }
+  Top agents ranked by composite risk score. Cached 120s.
+```
+
+#### `GET /v1/security/agents/:id`
+
+```
+Response: AgentSecurityProfile — full security profile for a single agent
+          404 if no security data exists for this agent yet
+Cached: 300s
+```
+
+#### `GET /v1/security/signals`
+
+```
+Response: { signals: SignalRegistryEntry[] }
+  Full signal registry (121 non-excluded sub-checks). Cached 300s.
+```
+
+#### `GET /v1/security/agents/:id/subcheck-config`
+
+```
+Response: { overrides: Record<subCheckId, { online_detection: boolean }> }
+  Per-subcheck online detection toggle map for this agent.
+  Empty object if no overrides set.
+```
+
+#### `PUT /v1/security/agents/:id/subcheck-config`
+
+```
+Body:     { "subCheckId": "INJ-001.1", "online_detection": true }
+Response: { ok: true, subCheckId, online_detection }
+Side effects: invalidates dp:sec:{tenantId}:agent:{agentId}:cfg in Redis
+```
+
+#### `GET /v1/security/agents/:id/alert-config`
+
+```
+Response: { composite_threshold, llm_composite_threshold, asi_composite_threshold,
+            signal_thresholds: Record<signalId, number> }
+  Composite and per-signal alert thresholds. NULL = use platform default (60).
+```
+
+#### `PUT /v1/security/agents/:id/alert-config`
+
+```
+Accepted body shapes (one per request):
+  { composite_threshold: number }                    — shared fallback (1–100)
+  { llm_composite_threshold: number | null }         — LLM-only (null = reset to default)
+  { asi_composite_threshold: number | null }         — ASI-only (null = reset to default)
+  { signal_id: string, threshold: number | null }    — per-signal (null = reset)
+
+Response: { ok: true }
+Side effects: invalidates dp:sec:{tenantId}:agent:{agentId}:cfg in Redis
+Errors:   400 if body shape is invalid or threshold out of range
 ```
 
 ---

@@ -94,7 +94,10 @@ dapplepot_api/
 │   ├── 005_invites_table.sql
 │   ├── 006_password_resets_table.sql
 │   ├── 007_refresh_tokens_table.sql
-│   └── 008_sdk_keys_raw.sql
+│   ├── 008_sdk_keys_raw.sql
+│   ├── 009_agent_subcheck_overrides.sql    ← agent_subcheck_overrides table (JSONB per-subcheck online toggles)
+│   ├── 010_agent_alert_config.sql          ← agent_alert_config table (composite + per-signal thresholds)
+│   └── 011_split_composite_thresholds.sql  ← adds llm_composite_threshold + asi_composite_threshold columns
 │
 │   # Application entry
 ├── src/
@@ -142,7 +145,7 @@ dapplepot_api/
 │   │   ├── index.ts                    ← mounts all route groups onto Hono app
 │   │   ├── auth.ts                     ← POST /v1/auth/login|refresh|logout|forgot-password|reset-password|accept-invite
 │   │   ├── users.ts                    ← GET/POST /v1/users, /me, /invites, /:id/role, /:id/status
-│   │   ├── tenants.ts                  ← GET /v1/tenants  |  POST /v1/tenants/onboard (superadmin only)
+│   │   ├── tenants.ts                  ← GET /v1/tenants/:id (superadmin or own)  |  GET /v1/tenants (superadmin)  |  POST /v1/tenants/onboard (superadmin)
 │   │   ├── agents.ts                   ← GET /v1/agents (viewer+)  |  POST /v1/agents (admin only)
 │   │   ├── sdk-keys.ts                 ← GET /v1/sdk-keys (viewer+)  |  GET /v1/sdk-keys/:keyId/reveal (admin)
 │   │   ├── sessions.ts                 ← GET /v1/sessions, /v1/sessions/:id, /trace, /state-history, /alerts, /live (SSE)
@@ -152,7 +155,10 @@ dapplepot_api/
 │   │   ├── rules.ts                    ← GET/POST /v1/rules  |  PUT /v1/rules/:id
 │   │   ├── channels.ts                 ← GET/POST /v1/channels  |  PUT /v1/channels/:id
 │   │   └── security.ts                 ← GET /v1/security/overview, /sessions/:id/score,
-│   │                                      /sessions/:id/findings, /remediation, /signatures (Zone 6)
+│   │                                      /sessions/:id/findings, /remediation, /signatures,
+│   │                                      /agents, /agents/:id, /signals,
+│   │                                      /agents/:id/subcheck-config (GET+PUT),
+│   │                                      /agents/:id/alert-config (GET+PUT)  (Zone 6)
 │   │
 │   │   # Query layer — pure async functions, no HTTP concerns
 │   ├── queries/
@@ -162,8 +168,10 @@ dapplepot_api/
 │   │   ├── alerts.pg.ts                ← Postgres alert feed + detail queries
 │   │   ├── rules.pg.ts                 ← policy_rules CRUD queries
 │   │   ├── channels.pg.ts              ← delivery channel CRUD queries
-│   │   ├── security.pg.ts              ← overview, session score, findings, remediation stats (Zone 6)
-│   │   ├── tenants.pg.ts               ← listTenants(), onboardTenant() — sql.begin() transaction: INSERT tenant + admin user + sdk_key; returns raw sdkKey once
+│   │   ├── security.pg.ts              ← getSecurityOverview, getSessionScore, getSessionFindings,
+│   │   │                                  getRemediationStats, getTopAgents, getAgentProfile,
+│   │   │                                  getSignalRegistry, getAgentAlertConfig, upsertAgentAlertConfig  (Zone 6)
+│   │   ├── tenants.pg.ts               ← getTenantById, listTenants(), onboardTenant() — sql.begin() transaction: INSERT tenant + admin user + sdk_key; returns raw sdkKey once
 │   │   ├── agents.pg.ts                ← listAgents(tenantId), createAgent({ tenantId, name, latestVersion })
 │   │   ├── sdk-keys.pg.ts              ← listSdkKeys(tenantId), revealSdkKey(tenantId, keyId) → raw_key
 │   │   ├── users.pg.ts                 ← findByEmail, findById, create, listUsers, updateRole, updateStatus, updateProfile
@@ -251,7 +259,7 @@ dapplepot_api/
 
 | Method | Path | Store | Purpose |
 |--------|------|-------|---------|
-| GET | `/v1/alerts` | PG | Paginated alert feed with filters |
+| GET | `/v1/alerts` | PG | Paginated alert feed — filters: severity, status, ruleId, agentId, since, until, `source` ('security'\|'policy') |
 | GET | `/v1/alerts/:id` | PG | Alert detail |
 | PUT | `/v1/alerts/:id/status` | PG | Acknowledge or resolve alert |
 | GET | `/v1/alerts/stats` | PG | Alert counts by severity + rule |
@@ -296,18 +304,19 @@ dapplepot_api/
 | GET | `/v1/agents` | viewer+ | List all agents for caller's tenant |
 | POST | `/v1/agents` | admin | Create a new agent under caller's tenant |
 
-### Resource group: Tenants (2 endpoints — superadmin only)
+### Resource group: Tenants (3 endpoints — superadmin, or own tenant for /:id)
 
 | Method | Path | Store | Purpose |
 |--------|------|-------|---------|
-| GET | `/v1/tenants` | PG | List all tenants with admin user + user count |
-| POST | `/v1/tenants/onboard` | PG (transaction) | Create tenant + first admin user atomically |
+| GET | `/v1/tenants` | PG | List all tenants with admin user + user count (superadmin only) |
+| GET | `/v1/tenants/:id` | PG | Get tenant by ID (superadmin or own tenant) |
+| POST | `/v1/tenants/onboard` | PG (transaction) | Create tenant + first admin user atomically (superadmin only) |
 
-### Resource group: Security (5 endpoints — Zone 6, read-only)
+### Resource group: Security (12 endpoints — Zone 6)
 
-Data written by `dapplepot_security`. This service reads and serves the results — it does not run detection or scoring itself.
+Data written by `dapplepot_security`. This service reads and serves the results — it does not run detection or scoring itself. Alert config and subcheck config endpoints write to Postgres.
 
-**Note:** `GET /v1/control/commands` auth path (SDK key) is unaffected. All security endpoints use standard JWT auth.
+**Note:** All security endpoints use standard JWT auth.
 
 | Method | Path | Store | Purpose |
 |--------|------|-------|---------|
@@ -316,6 +325,13 @@ Data written by `dapplepot_security`. This service reads and serves the results 
 | GET | `/v1/security/sessions/:id/findings` | PG | Security findings for a session |
 | GET | `/v1/security/remediation` | PG | Top firing signals + remediation guidance |
 | GET | `/v1/security/signatures` | PG | Active injection signatures for tenant |
+| GET | `/v1/security/agents` | PG | Top agents ranked by composite risk score |
+| GET | `/v1/security/agents/:id` | PG | Full security profile for a single agent |
+| GET | `/v1/security/signals` | PG | Full signal registry (121 non-excluded sub-checks) |
+| GET | `/v1/security/agents/:id/subcheck-config` | PG | Per-subcheck online detection toggle map |
+| PUT | `/v1/security/agents/:id/subcheck-config` | PG + Redis | Upsert one sub-check override; invalidates scorer config cache |
+| GET | `/v1/security/agents/:id/alert-config` | PG | Composite + per-signal alert threshold overrides |
+| PUT | `/v1/security/agents/:id/alert-config` | PG + Redis | Update composite or per-signal threshold; invalidates scorer config cache |
 
 ---
 
@@ -1358,6 +1374,26 @@ Endpoint → response type mapping:
 - `GET /v1/security/sessions/:id/findings` → `{ findings: SecurityFinding[] }`
 - `GET /v1/security/remediation` → `{ remediation: RemediationCard[] }`
 - `GET /v1/security/signatures` → `{ signatures: InjectionSignature[] }`
+- `GET /v1/security/agents` → `{ agents: AgentSecuritySummary[] }`
+- `GET /v1/security/agents/:id` → `AgentSecurityProfile` (404 if no data yet)
+- `GET /v1/security/signals` → `{ signals: SignalRegistryEntry[] }`
+- `GET /v1/security/agents/:id/subcheck-config` → `{ overrides: Record<subCheckId, { online_detection: boolean }> }`
+- `PUT /v1/security/agents/:id/subcheck-config` → `{ ok: true, subCheckId, online_detection }`
+- `GET /v1/security/agents/:id/alert-config` → `{ composite_threshold, llm_composite_threshold, asi_composite_threshold, signal_thresholds }`
+- `PUT /v1/security/agents/:id/alert-config` → `{ ok: true }`
+
+### Alert config body shapes (PUT /v1/security/agents/:id/alert-config)
+
+```typescript
+// One of these shapes per request:
+{ composite_threshold: number }                    // shared fallback (1–100)
+{ llm_composite_threshold: number | null }         // LLM-only (null = reset to platform default 60)
+{ asi_composite_threshold: number | null }         // ASI-only (null = reset to platform default 60)
+{ signal_id: string; threshold: number | null }    // per-signal override (null = reset, range 0–999)
+```
+
+After write, both endpoints invalidate `dp:sec:{tenantId}:agent:{agentId}:cfg` in Redis so the
+`dapplepot_security` scorer picks up the change on its next run without waiting for TTL expiry.
 
 ---
 
@@ -1541,7 +1577,9 @@ src/queries/alerts.pg.ts           getAlertList, getAlertDetail, updateAlertStat
 src/queries/rules.pg.ts            getRuleList, createRule, updateRule, dryRunRule
 src/queries/channels.pg.ts         getChannelList, createChannel, updateChannel
 src/queries/security.pg.ts         getSecurityOverview, getSessionScore, getSessionFindings,
-                                   getRemediationStats  (Zone 6 — reads tables written by dapplepot_security)
+                                   getRemediationStats, getTopAgents, getAgentProfile,
+                                   getSignalRegistry, getAgentAlertConfig, upsertAgentAlertConfig
+                                   (Zone 6 — reads/writes security config tables)
 ```
 
 ### Phase 3 — Stitchers (combine PG + CH, no HTTP)
@@ -1565,7 +1603,9 @@ src/routes/alerts.ts               4 alert endpoints
 src/routes/control.ts              POST kill-switch, POST interrupt, GET SSE channel
 src/routes/rules.ts                GET/POST/PUT rules
 src/routes/channels.ts             GET/POST/PUT channels
-src/routes/security.ts             5 security endpoints — read-only, JWT auth  (Zone 6)
+src/routes/security.ts             12 security endpoints — overview, scores, findings, remediation,
+                                   signatures, agent profiles, signal registry, subcheck config,
+                                   alert threshold config (GET+PUT)  (Zone 6)
 src/routes/index.ts                mount all groups onto Hono app
 src/index.ts                       Hono app factory, lifespan, startup validation
 ```
