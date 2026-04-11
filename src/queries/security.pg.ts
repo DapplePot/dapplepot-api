@@ -45,13 +45,13 @@ export async function getSecurityOverview(
     ),
 
     // Top 5 highest-risk sessions
-    queryRows<{ session_id: string; agent_id: string; llm_score: number; llm_band: string }>(
-      `SELECT s.session_id, a.name AS agent_id, s.llm_score, s.llm_band
+    queryRows<{ session_id: string; agent_id: string; llm_score: number; llm_band: string; asi_score: number; asi_band: string }>(
+      `SELECT s.session_id, a.name AS agent_id, s.llm_score, s.llm_band, s.asi_score, s.asi_band
        FROM session_risk_scores s
        LEFT JOIN agents a ON a.agent_id = s.agent_id
        WHERE s.tenant_id = $1
          AND s.scored_at >= now() - make_interval(hours => $2)
-       ORDER BY s.llm_score DESC
+       ORDER BY GREATEST(s.llm_score, s.asi_score) DESC
        LIMIT 5`,
       [tenantId, windowHours]
     ),
@@ -103,6 +103,8 @@ export async function getSecurityOverview(
       agentId:        r.agent_id,
       llmScore:       r.llm_score,
       llmBand:        r.llm_band as import('../types/security.js').RiskBand,
+      asiScore:       r.asi_score,
+      asiBand:        r.asi_band as import('../types/security.js').RiskBand,
       owaspSignalIds: [],
     })),
     topAgents: topAgentsRows.map(r => ({
@@ -132,6 +134,7 @@ export async function getSessionScore(
         s.llm_signal_status,
         s.asi_signal_status,
         s.v3_llm_composite,
+        s.v3_asi_composite,
         s.scorer_version, s.scored_at,
         ar.trust_score, ar.trust_trend
      FROM session_risk_scores s
@@ -143,10 +146,13 @@ export async function getSessionScore(
   if (!row) return null
 
   // Extract v3 composite fields if present
-  const v3 = row.v3_llm_composite as Record<string, unknown> | null
-  const attackChains  = (v3?.attack_chains_detected as string[]  | undefined) ?? undefined
-  const amplification = (v3?.amplification_factor  as number    | undefined) ?? undefined
-  const confidenceBand = (v3?.confidence_band      as string    | undefined) ?? undefined
+  const v3llm = row.v3_llm_composite as Record<string, unknown> | null
+  const v3asi = row.v3_asi_composite as Record<string, unknown> | null
+  const attackChains   = (v3llm?.attack_chains_detected as string[] | undefined) ?? undefined
+  const amplification  = (v3llm?.amplification_factor  as number   | undefined) ?? undefined
+  const rawLlmComposite = (v3llm?.raw_composite         as number   | undefined) ?? undefined
+  const rawAsiComposite = (v3asi?.raw_composite         as number   | undefined) ?? undefined
+  const confidenceBand  = (v3llm?.confidence_band       as string   | undefined) ?? undefined
 
   return {
     sessionId:             row.session_id,
@@ -160,6 +166,8 @@ export async function getSessionScore(
     asiSignalStatus:       row.asi_signal_status ?? {},
     attackChainsDetected:  attackChains,
     amplification,
+    rawLlmComposite,
+    rawAsiComposite,
     confidenceBand,
     trustScore:            row.trust_score  ?? undefined,
     trustTrend:            row.trust_trend  ?? undefined,
@@ -353,6 +361,112 @@ export async function getSignalRegistry(): Promise<SignalRegistry[]> {
     confidenceTier: r.confidence_tier as ConfidenceTier ?? 'high',
     excluded:       r.excluded ?? false,
   }))
+}
+
+export interface AgentAlertConfig {
+  composite_threshold:     number
+  llm_composite_threshold: number | null  // null = platform default (60)
+  asi_composite_threshold: number | null  // null = platform default (60)
+  signal_thresholds:       Record<string, number>
+}
+
+export async function getAgentAlertConfig(
+  tenantId: string,
+  agentId: string,
+): Promise<AgentAlertConfig> {
+  const row = await queryRow<{
+    composite_threshold:     number
+    llm_composite_threshold: number | null
+    asi_composite_threshold: number | null
+    signal_thresholds:       Record<string, number>
+  }>(
+    `SELECT composite_threshold,
+            llm_composite_threshold,
+            asi_composite_threshold,
+            signal_thresholds
+     FROM agent_alert_config
+     WHERE tenant_id = $1 AND agent_id = $2`,
+    [tenantId, agentId],
+  )
+  return {
+    composite_threshold:     row?.composite_threshold     ?? 60,
+    llm_composite_threshold: row?.llm_composite_threshold ?? null,
+    asi_composite_threshold: row?.asi_composite_threshold ?? null,
+    signal_thresholds:       row?.signal_thresholds       ?? {},
+  }
+}
+
+export async function upsertAgentAlertConfig(
+  tenantId: string,
+  agentId: string,
+  opts: {
+    composite_threshold?:     number
+    llm_composite_threshold?: number | null  // null = reset to platform default
+    asi_composite_threshold?: number | null  // null = reset to platform default
+    signal_id?:               string
+    signal_threshold?:        number | null  // null = remove override
+  }
+): Promise<void> {
+  const { composite_threshold, llm_composite_threshold, asi_composite_threshold,
+          signal_id, signal_threshold } = opts
+
+  if (composite_threshold !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, composite_threshold, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         composite_threshold = EXCLUDED.composite_threshold,
+         updated_at          = now()`,
+      [tenantId, agentId, composite_threshold],
+    )
+  }
+
+  if (llm_composite_threshold !== undefined) {
+    // null → NULL in DB (reset to platform default)
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, llm_composite_threshold, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         llm_composite_threshold = EXCLUDED.llm_composite_threshold,
+         updated_at              = now()`,
+      [tenantId, agentId, llm_composite_threshold],
+    )
+  }
+
+  if (asi_composite_threshold !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, asi_composite_threshold, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         asi_composite_threshold = EXCLUDED.asi_composite_threshold,
+         updated_at              = now()`,
+      [tenantId, agentId, asi_composite_threshold],
+    )
+  }
+
+  if (signal_id !== undefined) {
+    if (signal_threshold !== null && signal_threshold !== undefined) {
+      await queryRow(
+        `INSERT INTO agent_alert_config (tenant_id, agent_id, signal_thresholds, updated_at)
+         VALUES ($1, $2, jsonb_build_object($3::text, $4::int), now())
+         ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+           signal_thresholds = agent_alert_config.signal_thresholds
+                               || jsonb_build_object($3::text, $4::int),
+           updated_at        = now()`,
+        [tenantId, agentId, signal_id, signal_threshold],
+      )
+    } else {
+      // Reset: remove signal key from JSONB (falls back to platform default in scorer)
+      await queryRow(
+        `INSERT INTO agent_alert_config (tenant_id, agent_id, signal_thresholds, updated_at)
+         VALUES ($1, $2, '{}', now())
+         ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+           signal_thresholds = agent_alert_config.signal_thresholds - $3::text,
+           updated_at        = now()`,
+        [tenantId, agentId, signal_id],
+      )
+    }
+  }
 }
 
 // Remediation copy keyed by owasp_signal_id (OW-LLM01 … OW-ASI10).

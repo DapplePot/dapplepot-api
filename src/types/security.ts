@@ -112,6 +112,8 @@ export interface SecurityOverview {
     agentId:         string
     llmScore:        number
     llmBand:         RiskBand
+    asiScore:        number
+    asiBand:         RiskBand
     owaspSignalIds:  string[]
   }>
   topAgents: AgentRiskEntry[]

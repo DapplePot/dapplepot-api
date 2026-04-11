@@ -12,7 +12,7 @@ import {
 import {
   getSecurityOverview, getSessionScore,
   getSessionFindings, getRemediationStats, getTopAgents, getAgentProfile,
-  getSignalRegistry,
+  getSignalRegistry, getAgentAlertConfig, upsertAgentAlertConfig,
 } from '../queries/security.pg.js'
 
 type Variables = { tenantId: string; userId: string }
@@ -125,6 +125,89 @@ securityRouter.get('/agents/:id/subcheck-config', async (c) => {
     [tenantId, agentId]
   )
   return c.json({ overrides: row?.overrides ?? {} })
+})
+
+// GET /v1/security/agents/:id/alert-config
+// Returns composite threshold + per-signal threshold overrides for this agent.
+// Absent signals fall back to platform defaults in the scorer.
+securityRouter.get('/agents/:id/alert-config', async (c) => {
+  const tenantId = c.get('tenantId')
+  const agentId  = c.req.param('id')
+  const config   = await getAgentAlertConfig(tenantId, agentId)
+  return c.json(config)
+})
+
+// PUT /v1/security/agents/:id/alert-config
+// Accepted body shapes (one per request):
+//   { composite_threshold: number }                    — shared fallback (1–100)
+//   { llm_composite_threshold: number | null }         — LLM-only (null = reset to default)
+//   { asi_composite_threshold: number | null }         — ASI-only (null = reset to default)
+//   { signal_id: string, threshold: number | null }    — per-signal (null = reset)
+// Invalidates Redis config cache after write.
+securityRouter.put('/agents/:id/alert-config', async (c) => {
+  const tenantId = c.get('tenantId')
+  const agentId  = c.req.param('id')
+
+  let body: {
+    composite_threshold?:     number
+    llm_composite_threshold?: number | null
+    asi_composite_threshold?: number | null
+    signal_id?:               string
+    threshold?:               number | null
+  }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+
+  const { composite_threshold, llm_composite_threshold, asi_composite_threshold,
+          signal_id, threshold } = body
+
+  const isComposite = composite_threshold !== undefined
+  const isLlm       = llm_composite_threshold !== undefined
+  const isAsi       = asi_composite_threshold !== undefined
+  const isSignal    = signal_id !== undefined
+
+  if (!isComposite && !isLlm && !isAsi && !isSignal) {
+    return c.json({ error: 'Provide composite_threshold, llm_composite_threshold, asi_composite_threshold, or signal_id' }, 400)
+  }
+
+  if (isComposite) {
+    if (typeof composite_threshold !== 'number' || composite_threshold < 1 || composite_threshold > 100) {
+      return c.json({ error: 'composite_threshold must be an integer 1–100' }, 400)
+    }
+  }
+  if (isLlm && llm_composite_threshold !== null) {
+    if (typeof llm_composite_threshold !== 'number' || llm_composite_threshold < 1 || llm_composite_threshold > 100) {
+      return c.json({ error: 'llm_composite_threshold must be 1–100 or null' }, 400)
+    }
+  }
+  if (isAsi && asi_composite_threshold !== null) {
+    if (typeof asi_composite_threshold !== 'number' || asi_composite_threshold < 1 || asi_composite_threshold > 100) {
+      return c.json({ error: 'asi_composite_threshold must be 1–100 or null' }, 400)
+    }
+  }
+  if (isSignal) {
+    if (typeof signal_id !== 'string') {
+      return c.json({ error: 'signal_id must be a string' }, 400)
+    }
+    if (threshold !== undefined && threshold !== null && (typeof threshold !== 'number' || threshold < 0 || threshold > 999)) {
+      return c.json({ error: 'threshold must be 0–999 or null' }, 400)
+    }
+  }
+
+  await upsertAgentAlertConfig(tenantId, agentId, {
+    ...(isComposite ? { composite_threshold }                  : {}),
+    ...(isLlm       ? { llm_composite_threshold }              : {}),
+    ...(isAsi       ? { asi_composite_threshold }              : {}),
+    ...(isSignal    ? { signal_id, signal_threshold: threshold ?? null } : {}),
+  })
+
+  // Invalidate per-agent Redis config cache so the scorer picks up the change
+  await redis.del(`dp:sec:${tenantId}:agent:${agentId}:cfg`)
+
+  return c.json({ ok: true })
 })
 
 // PUT /v1/security/agents/:id/subcheck-config
