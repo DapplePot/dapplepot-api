@@ -1,7 +1,8 @@
 import { Hono } from 'hono'
 import { jwtAuth } from '../middleware/auth.js'
 import { rateLimitMiddleware } from '../middleware/ratelimit.js'
-import { queryRows } from '../lib/postgres.js'
+import { queryRows, queryRow } from '../lib/postgres.js'
+import { redis } from '../lib/redis.js'
 import {
   cached,
   CACHE_TTL_SECURITY_OVERVIEW,
@@ -110,4 +111,55 @@ securityRouter.get('/signatures', async (c) => {
     [tenantId]
   )
   return c.json({ signatures: rows })
+})
+
+// GET /v1/security/agents/:id/subcheck-config
+// Returns the current per-subcheck online toggle map for an agent.
+// Shape: { overrides: Record<subCheckId, { online_detection: boolean }> }
+securityRouter.get('/agents/:id/subcheck-config', async (c) => {
+  const tenantId = c.get('tenantId')
+  const agentId  = c.req.param('id')
+  const row = await queryRow<{ overrides: Record<string, { online_detection: boolean }> }>(
+    `SELECT overrides FROM agent_subcheck_overrides
+     WHERE tenant_id = $1 AND agent_id = $2`,
+    [tenantId, agentId]
+  )
+  return c.json({ overrides: row?.overrides ?? {} })
+})
+
+// PUT /v1/security/agents/:id/subcheck-config
+// Body: { subCheckId: string, online_detection: boolean }
+// Upserts one sub-check override and invalidates the Redis config cache.
+// jwtAuth is already applied router-wide above — no extra role restriction needed.
+securityRouter.put('/agents/:id/subcheck-config', async (c) => {
+  const tenantId = c.get('tenantId')
+  const agentId  = c.req.param('id')
+
+  let body: { subCheckId: string; online_detection: boolean }
+  try {
+    body = await c.req.json()
+  } catch {
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+
+  const { subCheckId, online_detection } = body
+  if (!subCheckId || typeof online_detection !== 'boolean') {
+    return c.json({ error: 'subCheckId (string) and online_detection (boolean) are required' }, 400)
+  }
+
+  // Upsert: merge single key into the JSONB overrides column
+  await queryRow(
+    `INSERT INTO agent_subcheck_overrides (tenant_id, agent_id, overrides, updated_at)
+     VALUES ($1, $2, jsonb_build_object($3::text, jsonb_build_object('online_detection', $4::boolean)), now())
+     ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+       overrides   = agent_subcheck_overrides.overrides
+                     || jsonb_build_object($3::text, jsonb_build_object('online_detection', $4::boolean)),
+       updated_at  = now()`,
+    [tenantId, agentId, subCheckId, online_detection]
+  )
+
+  // Invalidate the per-agent Redis config cache so the scorer picks up the change
+  await redis.del(`dp:sec:${tenantId}:agent:${agentId}:cfg`)
+
+  return c.json({ ok: true, subCheckId, online_detection })
 })
