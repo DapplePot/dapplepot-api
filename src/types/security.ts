@@ -164,6 +164,27 @@ export interface AgentProfile {
   recentSessions:  AgentRecentSession[]
 }
 
+export type OnlineAction = 'monitor' | 'alert' | 'block_call' | 'terminate_session'
+
+/** Per-sub-check online detection config (stored in agent_subcheck_overrides JSONB). */
+export interface SubCheckOnlineConfig {
+  online_detection: boolean
+  action:           OnlineAction
+}
+
+/** Row from the session_actions audit table — written when block_call / terminate_session fires. */
+export interface SessionAction {
+  id:             number
+  sessionId:      string
+  tenantId:       string
+  agentId:        string | null
+  subCheckId:     string            // "PI-01a"
+  owaspSignalId:  string            // "OW-LLM01"
+  severity:       string
+  actionTaken:    'block_call' | 'terminate_session'
+  triggeredAt:    string            // ISO 8601
+}
+
 export interface InjectionSignature {
   signatureId:  string
   tenantId:     string | null   // null = platform-wide; non-null = tenant-specific

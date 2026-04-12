@@ -13,7 +13,11 @@ import {
   getSecurityOverview, getSessionScore,
   getSessionFindings, getRemediationStats, getTopAgents, getAgentProfile,
   getSignalRegistry, getAgentAlertConfig, upsertAgentAlertConfig,
+  getSessionActions,
 } from '../queries/security.pg.js'
+import type { OnlineAction } from '../types/security.js'
+
+const VALID_ACTIONS = new Set<OnlineAction>(['monitor', 'alert', 'block_call', 'terminate_session'])
 
 type Variables = { tenantId: string; userId: string }
 
@@ -114,12 +118,12 @@ securityRouter.get('/signatures', async (c) => {
 })
 
 // GET /v1/security/agents/:id/subcheck-config
-// Returns the current per-subcheck online toggle map for an agent.
-// Shape: { overrides: Record<subCheckId, { online_detection: boolean }> }
+// Returns the current per-subcheck online toggle + action map for an agent.
+// Shape: { overrides: Record<subCheckId, { online_detection: boolean, action: OnlineAction }> }
 securityRouter.get('/agents/:id/subcheck-config', async (c) => {
   const tenantId = c.get('tenantId')
   const agentId  = c.req.param('id')
-  const row = await queryRow<{ overrides: Record<string, { online_detection: boolean }> }>(
+  const row = await queryRow<{ overrides: Record<string, { online_detection: boolean; action: OnlineAction }> }>(
     `SELECT overrides FROM agent_subcheck_overrides
      WHERE tenant_id = $1 AND agent_id = $2`,
     [tenantId, agentId]
@@ -211,38 +215,56 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
 })
 
 // PUT /v1/security/agents/:id/subcheck-config
-// Body: { subCheckId: string, online_detection: boolean }
-// Upserts one sub-check override and invalidates the Redis config cache.
+// Body: { subCheckId: string, online_detection: boolean, action?: OnlineAction }
+// Upserts one sub-check override (online toggle + action) and invalidates the Redis config cache.
+// action defaults to "monitor" when omitted.
 // jwtAuth is already applied router-wide above — no extra role restriction needed.
 securityRouter.put('/agents/:id/subcheck-config', async (c) => {
   const tenantId = c.get('tenantId')
   const agentId  = c.req.param('id')
 
-  let body: { subCheckId: string; online_detection: boolean }
+  let body: { subCheckId: string; online_detection: boolean; action?: string }
   try {
     body = await c.req.json()
   } catch {
     return c.json({ error: 'Invalid JSON body' }, 400)
   }
 
-  const { subCheckId, online_detection } = body
+  const { subCheckId, online_detection, action = 'monitor' } = body
   if (!subCheckId || typeof online_detection !== 'boolean') {
     return c.json({ error: 'subCheckId (string) and online_detection (boolean) are required' }, 400)
   }
+  if (!VALID_ACTIONS.has(action as OnlineAction)) {
+    return c.json({ error: `action must be one of: ${[...VALID_ACTIONS].join(', ')}` }, 400)
+  }
 
-  // Upsert: merge single key into the JSONB overrides column
+  // Upsert: merge single key into the JSONB overrides column including action
   await queryRow(
     `INSERT INTO agent_subcheck_overrides (tenant_id, agent_id, overrides, updated_at)
-     VALUES ($1, $2, jsonb_build_object($3::text, jsonb_build_object('online_detection', $4::boolean)), now())
+     VALUES ($1, $2,
+       jsonb_build_object($3::text,
+         jsonb_build_object('online_detection', $4::boolean, 'action', $5::text)
+       ), now())
      ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
        overrides   = agent_subcheck_overrides.overrides
-                     || jsonb_build_object($3::text, jsonb_build_object('online_detection', $4::boolean)),
+                     || jsonb_build_object($3::text,
+                          jsonb_build_object('online_detection', $4::boolean, 'action', $5::text)
+                        ),
        updated_at  = now()`,
-    [tenantId, agentId, subCheckId, online_detection]
+    [tenantId, agentId, subCheckId, online_detection, action]
   )
 
   // Invalidate the per-agent Redis config cache so the scorer picks up the change
   await redis.del(`dp:sec:${tenantId}:agent:${agentId}:cfg`)
 
-  return c.json({ ok: true, subCheckId, online_detection })
+  return c.json({ ok: true, subCheckId, online_detection, action })
+})
+
+// GET /v1/security/sessions/:id/actions
+// Returns the session_actions audit rows for a session (block_call / terminate_session events).
+securityRouter.get('/sessions/:id/actions', async (c) => {
+  const tenantId  = c.get('tenantId')
+  const sessionId = c.req.param('id')
+  const actions   = await getSessionActions(tenantId, sessionId)
+  return c.json({ actions })
 })

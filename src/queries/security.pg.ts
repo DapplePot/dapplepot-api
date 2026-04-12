@@ -1,7 +1,7 @@
 import type {
   SecurityOverview, SessionRiskScore, SecurityFinding, RemediationCard, AgentRiskEntry,
   AgentProfile, AgentSignalBreakdown, AgentRecentSession, SignalRegistry, ConfidenceTier,
-  TrustTrend,
+  TrustTrend, SessionAction,
 } from '../types/security.js'
 import { queryRow, queryRows } from '../lib/postgres.js'
 
@@ -467,6 +467,32 @@ export async function upsertAgentAlertConfig(
       )
     }
   }
+}
+
+export async function getSessionActions(
+  tenantId: string,
+  sessionId: string,
+): Promise<SessionAction[]> {
+  const rows = await queryRows<any>(
+    `SELECT id, session_id, tenant_id, agent_id,
+            sub_check_id, owasp_signal_id, severity,
+            action_taken, triggered_at
+     FROM session_actions
+     WHERE session_id = $1 AND tenant_id = $2
+     ORDER BY triggered_at ASC`,
+    [sessionId, tenantId],
+  )
+  return rows.map(r => ({
+    id:            Number(r.id),
+    sessionId:     r.session_id,
+    tenantId:      r.tenant_id,
+    agentId:       r.agent_id ?? null,
+    subCheckId:    r.sub_check_id,
+    owaspSignalId: r.owasp_signal_id,
+    severity:      r.severity,
+    actionTaken:   r.action_taken as 'block_call' | 'terminate_session',
+    triggeredAt:   new Date(r.triggered_at).toISOString(),
+  }))
 }
 
 // Remediation copy keyed by owasp_signal_id (OW-LLM01 … OW-ASI10).
