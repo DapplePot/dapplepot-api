@@ -1,5 +1,5 @@
 import { Hono } from 'hono'
-import { jwtAuth } from '../middleware/auth.js'
+import { jwtAuth, sdkKeyAuth } from '../middleware/auth.js'
 import { rateLimitMiddleware } from '../middleware/ratelimit.js'
 import { queryRows, queryRow } from '../lib/postgres.js'
 import { redis } from '../lib/redis.js'
@@ -121,6 +121,27 @@ securityRouter.get('/signatures', async (c) => {
 // Returns the current per-subcheck online toggle + action map for an agent.
 // Shape: { overrides: Record<subCheckId, { online_detection: boolean, action: OnlineAction }> }
 securityRouter.get('/agents/:id/subcheck-config', async (c) => {
+  const tenantId = c.get('tenantId')
+  const agentId  = c.req.param('id')
+  const row = await queryRow<{ overrides: Record<string, { online_detection: boolean; action: OnlineAction }> }>(
+    `SELECT overrides FROM agent_subcheck_overrides
+     WHERE tenant_id = $1 AND agent_id = $2`,
+    [tenantId, agentId]
+  )
+  return c.json({ overrides: row?.overrides ?? {} })
+})
+
+// ── SDK-facing router (sdkKeyAuth only — no JWT required) ────────────────────
+// The langgraph-sdk calls these endpoints from the agent process using an SDK
+// write key.  They are mounted separately in index.ts at /v1/sdk/security so
+// they bypass the router-wide jwtAuth above.
+
+export const sdkSecurityRouter = new Hono<{ Variables: Variables }>()
+sdkSecurityRouter.use('*', sdkKeyAuth)
+sdkSecurityRouter.use('*', rateLimitMiddleware)
+
+// GET /v1/sdk/security/agents/:id/subcheck-config
+sdkSecurityRouter.get('/agents/:id/subcheck-config', async (c) => {
   const tenantId = c.get('tenantId')
   const agentId  = c.req.param('id')
   const row = await queryRow<{ overrides: Record<string, { online_detection: boolean; action: OnlineAction }> }>(

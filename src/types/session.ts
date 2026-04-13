@@ -4,7 +4,7 @@ export type SessionStatus =
   | 'finalised'
   | 'interrupted'
   | 'killed'
-  | 'error'
+  | 'terminated'
 
 export interface SessionSummary {
   sessionId: string
