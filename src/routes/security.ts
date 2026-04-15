@@ -17,7 +17,7 @@ import {
 } from '../queries/security.pg.js'
 import type { OnlineAction } from '../types/security.js'
 
-const VALID_ACTIONS = new Set<OnlineAction>(['monitor', 'alert', 'block_call', 'terminate_session'])
+const VALID_ACTIONS = new Set<OnlineAction>(['alert', 'sanitize', 'terminate_session'])
 
 type Variables = { tenantId: string; userId: string }
 
@@ -128,7 +128,12 @@ securityRouter.get('/agents/:id/subcheck-config', async (c) => {
      WHERE tenant_id = $1 AND agent_id = $2`,
     [tenantId, agentId]
   )
-  return c.json({ overrides: row?.overrides ?? {} })
+  const overrides = row?.overrides ?? {}
+  for (const v of Object.values(overrides)) {
+    if ((v.action as string) === 'monitor') v.action = 'alert'
+    if ((v.action as string) === 'block_call') v.action = 'terminate_session'
+  }
+  return c.json({ overrides })
 })
 
 // ── SDK-facing router (sdkKeyAuth only — no JWT required) ────────────────────
@@ -149,7 +154,13 @@ sdkSecurityRouter.get('/agents/:id/subcheck-config', async (c) => {
      WHERE tenant_id = $1 AND agent_id = $2`,
     [tenantId, agentId]
   )
-  return c.json({ overrides: row?.overrides ?? {} })
+  const overrides = row?.overrides ?? {}
+  // Migrate stale action values stored before the 3-action model
+  for (const v of Object.values(overrides)) {
+    if ((v.action as string) === 'monitor') v.action = 'alert'
+    if ((v.action as string) === 'block_call') v.action = 'terminate_session'
+  }
+  return c.json({ overrides })
 })
 
 // GET /v1/security/agents/:id/alert-config

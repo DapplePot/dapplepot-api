@@ -164,7 +164,7 @@ export interface AgentProfile {
   recentSessions:  AgentRecentSession[]
 }
 
-export type OnlineAction = 'monitor' | 'alert' | 'block_call' | 'terminate_session'
+export type OnlineAction = 'alert' | 'sanitize' | 'terminate_session'
 
 /** Per-sub-check online detection config (stored in agent_subcheck_overrides JSONB). */
 export interface SubCheckOnlineConfig {
@@ -172,16 +172,22 @@ export interface SubCheckOnlineConfig {
   action:           OnlineAction
 }
 
-/** Row from the session_actions audit table — written when block_call / terminate_session fires. */
+/** Online detection row — all online findings for a session with their resolved action. */
 export interface SessionAction {
-  id:             number
+  id:             string            // finding_id UUID
+  eventId:        string            // event_id that triggered this check
   sessionId:      string
   tenantId:       string
   agentId:        string | null
   subCheckId:     string            // "PI-01a"
   owaspSignalId:  string            // "OW-LLM01"
+  checkLabel:     string            // human-readable check name
   severity:       string
-  actionTaken:    'block_call' | 'terminate_session'
+  category:       string
+  framework:      string            // "LLM" | "ASI"
+  matchedText:    string | null     // snippet that triggered the check
+  detail:         string | null
+  actionTaken:    OnlineAction      // all 5 action types including monitor
   triggeredAt:    string            // ISO 8601
 }
 

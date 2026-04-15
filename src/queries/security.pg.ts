@@ -189,6 +189,7 @@ export async function getSessionFindings(
         created_at
      FROM security_findings
      WHERE session_id = $1 AND tenant_id = $2
+       AND detection_phase = 'post_session'
      ORDER BY check_score DESC, created_at ASC`,
     [sessionId, tenantId]
   )
@@ -473,24 +474,53 @@ export async function getSessionActions(
   tenantId: string,
   sessionId: string,
 ): Promise<SessionAction[]> {
+  // Drive from security_findings (all online detections) and LEFT JOIN session_actions
+  // to resolve action_taken. Findings without an audit row were monitor/alert actions.
   const rows = await queryRows<any>(
-    `SELECT id, session_id, tenant_id, agent_id,
-            sub_check_id, owasp_signal_id, severity,
-            action_taken, triggered_at
-     FROM session_actions
-     WHERE session_id = $1 AND tenant_id = $2
+    `SELECT * FROM (
+       SELECT DISTINCT ON (sf.sub_check_id, sf.event_id)
+           sf.finding_id,
+           sf.event_id,
+           sf.session_id,
+           sf.tenant_id,
+           sa.agent_id,
+           sf.sub_check_id,
+           sf.owasp_signal_id,
+           sf.check_label,
+           sf.severity,
+           sf.category,
+           sf.framework,
+           sf.matched_text,
+           sf.detail,
+           COALESCE(sa.action_taken, 'alert') AS action_taken,
+           COALESCE(sf.emitted_at, sf.created_at) AS triggered_at
+        FROM security_findings sf
+        LEFT JOIN session_actions sa
+               ON sa.session_id = sf.session_id::text
+              AND sa.sub_check_id = sf.sub_check_id
+        WHERE sf.session_id = $1::uuid
+          AND sf.tenant_id = $2::uuid
+          AND sf.detection_phase = 'online'
+        ORDER BY sf.sub_check_id, sf.event_id, sf.created_at ASC
+     ) deduped
      ORDER BY triggered_at ASC`,
     [sessionId, tenantId],
   )
   return rows.map(r => ({
-    id:            Number(r.id),
+    id:            r.finding_id as string,
+    eventId:       r.event_id as string,
     sessionId:     r.session_id,
     tenantId:      r.tenant_id,
     agentId:       r.agent_id ?? null,
     subCheckId:    r.sub_check_id,
     owaspSignalId: r.owasp_signal_id,
+    checkLabel:    r.check_label,
     severity:      r.severity,
-    actionTaken:   r.action_taken as 'block_call' | 'terminate_session',
+    category:      r.category,
+    framework:     r.framework,
+    matchedText:   r.matched_text ?? null,
+    detail:        r.detail ?? null,
+    actionTaken:   r.action_taken as import('../types/security.js').OnlineAction,
     triggeredAt:   new Date(r.triggered_at).toISOString(),
   }))
 }
