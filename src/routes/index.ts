@@ -3,7 +3,6 @@ import { sessionsRouter } from './sessions.js'
 import { analyticsRouter } from './analytics.js'
 import { alertsRouter } from './alerts.js'
 import { controlRouter } from './control.js'
-import { rulesRouter } from './rules.js'
 import { channelsRouter } from './channels.js'
 import { securityRouter, sdkSecurityRouter } from './security.js'
 import { authRouter } from './auth.js'
@@ -24,7 +23,6 @@ export function mountRoutes(app: Hono<{ Variables: Variables }>) {
   app.route('/v1/analytics', analyticsRouter)
   app.route('/v1/alerts', alertsRouter)
   app.route('/v1/control', controlRouter)
-  app.route('/v1/rules', rulesRouter)
   app.route('/v1/channels', channelsRouter)
   app.route('/v1/security', securityRouter)
   app.route('/v1/sdk/security', sdkSecurityRouter)
