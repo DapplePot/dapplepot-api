@@ -229,17 +229,13 @@ export async function getSessionFunnelPg(
     reached_open: number
     reached_terminal: number
     completed: number
-    killed: number
-    interrupted: number
     errored: number
   }>(
     `SELECT
       COUNT(*)                                                                    AS total_started,
       COUNT(*) FILTER (WHERE status != 'stub')                                   AS reached_open,
-      COUNT(*) FILTER (WHERE status IN ('finalised','killed','interrupted','error')) AS reached_terminal,
+      COUNT(*) FILTER (WHERE status IN ('finalised','terminated','error'))        AS reached_terminal,
       COUNT(*) FILTER (WHERE status = 'finalised')                               AS completed,
-      COUNT(*) FILTER (WHERE status = 'killed')                                  AS killed,
-      COUNT(*) FILTER (WHERE status = 'interrupted')                             AS interrupted,
       COUNT(*) FILTER (WHERE status = 'error')                                   AS errored
     FROM sessions
     WHERE tenant_id  = $1
@@ -252,8 +248,6 @@ export async function getSessionFunnelPg(
     reachedOpen: Number(row?.reached_open ?? 0),
     reachedTerminal: Number(row?.reached_terminal ?? 0),
     completed: Number(row?.completed ?? 0),
-    killed: Number(row?.killed ?? 0),
-    interrupted: Number(row?.interrupted ?? 0),
     errored: Number(row?.errored ?? 0),
   }
 }

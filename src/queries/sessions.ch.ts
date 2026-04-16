@@ -148,7 +148,7 @@ export async function getStateHistory(
     FROM obs_events
     WHERE tenant_id  = {tenantId: String}
       AND session_id = {sessionId: UUID}
-      AND event_type IN ('checkpoint_write', 'interrupt_raised', 'interrupt_resumed')
+      AND event_type IN ('checkpoint_write')
     ORDER BY sequence_index ASC`,
     { tenantId, sessionId }
   )

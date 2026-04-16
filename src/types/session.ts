@@ -2,8 +2,6 @@ export type SessionStatus =
   | 'stub'
   | 'open'
   | 'finalised'
-  | 'interrupted'
-  | 'killed'
   | 'terminated'
 
 export interface SessionSummary {

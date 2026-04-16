@@ -130,7 +130,6 @@ securityRouter.get('/agents/:id/subcheck-config', async (c) => {
   )
   const overrides = row?.overrides ?? {}
   for (const v of Object.values(overrides)) {
-    if ((v.action as string) === 'monitor') v.action = 'alert'
     if ((v.action as string) === 'block_call') v.action = 'terminate_session'
   }
   return c.json({ overrides })
@@ -157,7 +156,6 @@ sdkSecurityRouter.get('/agents/:id/subcheck-config', async (c) => {
   const overrides = row?.overrides ?? {}
   // Migrate stale action values stored before the 3-action model
   for (const v of Object.values(overrides)) {
-    if ((v.action as string) === 'monitor') v.action = 'alert'
     if ((v.action as string) === 'block_call') v.action = 'terminate_session'
   }
   return c.json({ overrides })
@@ -249,7 +247,7 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
 // PUT /v1/security/agents/:id/subcheck-config
 // Body: { subCheckId: string, online_detection: boolean, action?: OnlineAction }
 // Upserts one sub-check override (online toggle + action) and invalidates the Redis config cache.
-// action defaults to "monitor" when omitted.
+// action defaults to "alert" when omitted.
 // jwtAuth is already applied router-wide above — no extra role restriction needed.
 securityRouter.put('/agents/:id/subcheck-config', async (c) => {
   const tenantId = c.get('tenantId')
@@ -262,7 +260,7 @@ securityRouter.put('/agents/:id/subcheck-config', async (c) => {
     return c.json({ error: 'Invalid JSON body' }, 400)
   }
 
-  const { subCheckId, online_detection, action = 'monitor' } = body
+  const { subCheckId, online_detection, action = 'alert' } = body
   if (!subCheckId || typeof online_detection !== 'boolean') {
     return c.json({ error: 'subCheckId (string) and online_detection (boolean) are required' }, 400)
   }

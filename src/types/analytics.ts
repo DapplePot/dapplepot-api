@@ -4,7 +4,6 @@ export interface OverviewMetrics {
   liveSessions: number
   completedSessions: number
   errorSessions: number
-  killedSessions: number
   totalLlmCalls: number
   totalInputTokens: number
   totalOutputTokens: number
@@ -53,8 +52,6 @@ export interface SessionFunnel {
   reachedOpen: number
   reachedTerminal: number
   completed: number
-  killed: number
-  interrupted: number
   errored: number
   completionRate: number
 }
