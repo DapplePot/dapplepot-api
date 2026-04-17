@@ -217,8 +217,62 @@ dapplepot_api/
 
 - Node.js 22 LTS
 - pnpm 9+
-- `dapplepot_pipeline` cloned and `docker compose up -d` running
-  (this service shares the same Postgres + ClickHouse + Redis + Kafka)
+- Docker + Docker Compose (provided by `dapplepot-pipeline`)
+- A ClickHouse Cloud instance (see infrastructure note below)
+
+---
+
+## Infrastructure
+
+`dapplepot-api` does **not** manage its own containers. All infrastructure (Postgres,
+Redis, Kafka) is provided by the `docker-compose.yml` in `dapplepot-pipeline`.
+
+### Start the shared stack
+
+```bash
+# From the dapplepot-pipeline directory:
+cd ../dapplepot-pipeline
+docker compose up -d
+```
+
+This starts:
+
+| Container | Image | Exposed port | Used by |
+|-----------|-------|-------------|---------|
+| `postgres` | `postgres:16` | `5432` | Postgres (sessions, alerts, rules, users…) |
+| `redis` | `redis:7-alpine` | `6379` | Cache + command queue + rate limiting |
+| `kafka` | `cp-kafka:7.6.0` | `9092` | Kill-switch + interrupt events |
+| `zookeeper` | `cp-zookeeper:7.6.0` | — | Kafka internal only |
+
+> **ClickHouse is not in the Docker Compose file.** The `clickhouse:` service block
+> is commented out because the project targets
+> [ClickHouse Cloud](https://clickhouse.cloud). You need a ClickHouse Cloud instance
+> (or any self-managed ClickHouse 24.x) and must set `CLICKHOUSE_HOST`,
+> `CLICKHOUSE_PORT`, `CLICKHOUSE_USER`, and `CLICKHOUSE_PASSWORD` in your `.env`.
+
+### Stop / reset
+
+```bash
+# Stop containers (keep volumes)
+docker compose down
+
+# Full reset — destroys all data
+docker compose down --volumes
+```
+
+### Postgres database name
+
+The `docker-compose.yml` creates the database as `defaultdb` (via `POSTGRES_DB`).
+The `.env.example` connection string uses `dapplepot_pipeline` as the database name.
+Make sure your `POSTGRES_URL` points to whichever name was actually created:
+
+```
+# Default docker-compose DB name:
+POSTGRES_URL=postgresql://dapplepot:dapplepot@localhost:5432/defaultdb
+
+# Or if dapplepot-pipeline ran its own migration that created dapplepot_pipeline:
+POSTGRES_URL=postgresql://dapplepot:dapplepot@localhost:5432/dapplepot_pipeline
+```
 
 ---
 
@@ -243,17 +297,27 @@ Key variables:
 
 | Variable | Example | Notes |
 |----------|---------|-------|
-| `POSTGRES_URL` | `postgresql://user:pass@host/db` | Local Docker or Aiven/cloud |
-| `POSTGRES_SSL` | `true` | Set to `true` for cloud/Aiven; omit for local Docker |
-| `CLICKHOUSE_HOST` | `abc.clickhouse.cloud` | Hostname only, no `https://` |
+| `POSTGRES_URL` | `postgresql://dapplepot:dapplepot@localhost:5432/defaultdb` | Local Docker — see database name note above |
+| `CLICKHOUSE_HOST` | `abc.clickhouse.cloud` | Hostname only, no `https://` — **required** |
 | `CLICKHOUSE_PORT` | `8443` | Default for ClickHouse Cloud |
+| `CLICKHOUSE_USER` | `dapplepot` | |
+| `CLICKHOUSE_PASSWORD` | `dapplepot` | |
 | `REDIS_URL` | `redis://localhost:6379` | |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Default; matches docker-compose |
 | `DAPPLEPOT_JWT_SECRET` | `changeme` | Min 1 char — used to sign access tokens |
 | `DAPPLEPOT_JWT_ACCESS_EXPIRES_IN` | `15m` | Access token lifetime, default `15m` |
 | `DAPPLEPOT_JWT_REFRESH_EXPIRES_IN` | `7d` | Refresh token lifetime, default `7d` |
 | `DAPPLEPOT_EMAIL_PROVIDER` | `console` | `console` (dev) \| `smtp` \| `resend` |
 | `DAPPLEPOT_EMAIL_FROM` | `noreply@dapplepot.io` | From address for invite/reset emails |
 | `DAPPLEPOT_APP_URL` | `http://localhost:5173` | Base URL for email links |
+| `API_HOST` | `0.0.0.0` | Bind address (default `0.0.0.0`) |
+| `API_PORT` | `3000` | HTTP listen port (default `3000`) |
+| `API_CORS_ORIGIN` | `http://localhost:5173` | Allowed CORS origin for the UI |
+
+> `POSTGRES_SSL` is **not** a recognised variable in this service. SSL for Postgres
+> connections is controlled via the `POSTGRES_URL` connection string itself (e.g.
+> append `?ssl=true` or use `sslmode=require`). The SSL flag in
+> `dapplepot-pipeline` is a pipeline-only concern.
 
 ### 3. Run schema migrations
 
@@ -262,8 +326,7 @@ pnpm migrate
 ```
 
 Reads `POSTGRES_URL` from `.env` and tracks applied files in a `_migrations`
-table. SSL is enabled only when `POSTGRES_SSL=true` — omit it for local Docker.
-All files are idempotent — safe to re-run.
+table. All files are idempotent — safe to re-run.
 
 > Ensure `dapplepot_pipeline` has run its own migrations first so the `alerts` table exists before this service's routes query it.
 
@@ -1064,7 +1127,8 @@ share Redis DB 0 — key collision is prevented by namespace prefix only.
 
 ## Schema migrations
 
-All migrations are idempotent (`IF NOT EXISTS`). Run with `pnpm migrate` in order.
+All migrations are idempotent (`IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`).
+Run with `pnpm migrate` in order.
 
 | File | What it does |
 |------|-------------|
@@ -1076,8 +1140,11 @@ All migrations are idempotent (`IF NOT EXISTS`). Run with `pnpm migrate` in orde
 | `migrations/006_password_resets_table.sql` | Creates `password_resets` for 1-hour reset tokens |
 | `migrations/007_refresh_tokens_table.sql` | Creates `refresh_tokens` for revocable refresh tokens |
 | `migrations/008_sdk_keys_raw.sql` | Adds `masked_key` + `raw_key` to `sdk_keys` for Settings page key management |
+| `migrations/009_agent_subcheck_overrides.sql` | Creates `agent_subcheck_overrides` table — per-agent online detection toggle map |
+| `migrations/010_agent_alert_config.sql` | Creates `agent_alert_config` table — per-agent composite + per-signal alert thresholds |
+| `migrations/011_split_composite_thresholds.sql` | Adds `llm_composite_threshold` + `asi_composite_threshold` columns to `agent_alert_config` |
 
-> The `alerts` table and its `status`/`resolved_at` columns are owned by `dapplepot_pipeline` — that migration lives there.
+> The `alerts` table and its `status`/`resolved_at` columns are owned by `dapplepot-pipeline` — that migration lives there.
 > Superadmin users have `tenant_id = NULL` — they are platform-level operators, not scoped to any tenant.
 
 ---
@@ -1171,4 +1238,4 @@ Read `AGENT.md` in full before writing any code. It contains:
 - Build order across all source files
 - Locked architecture decisions with reasons
 - ClickHouse aggregate table schemas
-- All schema migration SQL (001–006)
+- All schema migration SQL (001–011)
