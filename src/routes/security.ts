@@ -15,9 +15,10 @@ import {
   getSignalRegistry, getAgentAlertConfig, upsertAgentAlertConfig,
   getSessionActions,
 } from '../queries/security.pg.js'
+import { getToolCallBaseline } from '../queries/security.ch.js'
 import type { OnlineAction } from '../types/security.js'
 
-const VALID_ACTIONS = new Set<OnlineAction>(['alert', 'sanitize', 'terminate_session'])
+const VALID_ACTIONS = new Set<OnlineAction>(['alert', 'sanitize', 'block_call', 'terminate_session'])
 
 type Variables = { tenantId: string; userId: string }
 
@@ -117,20 +118,33 @@ securityRouter.get('/signatures', async (c) => {
   return c.json({ signatures: rows })
 })
 
+// GET /v1/security/agents/:id/tool-call-baseline
+// Returns 7-day tool-call-per-session statistics from ClickHouse.
+// Used by the UI to show the statistical EA-02b baseline alongside the manual cap.
+securityRouter.get('/agents/:id/tool-call-baseline', async (c) => {
+  const tenantId = c.get('tenantId')
+  const agentId  = c.req.param('id')
+  const baseline = await getToolCallBaseline(tenantId, agentId)
+  return c.json(baseline)
+})
+
 // GET /v1/security/agents/:id/subcheck-config
 // Returns the current per-subcheck online toggle + action map for an agent.
 // Shape: { overrides: Record<subCheckId, { online_detection: boolean, action: OnlineAction }> }
 securityRouter.get('/agents/:id/subcheck-config', async (c) => {
   const tenantId = c.get('tenantId')
   const agentId  = c.req.param('id')
-  const row = await queryRow<{ overrides: Record<string, { online_detection: boolean; action: OnlineAction }> }>(
+  const row = await queryRow<{ overrides: unknown }>(
     `SELECT overrides FROM agent_subcheck_overrides
      WHERE tenant_id = $1 AND agent_id = $2`,
     [tenantId, agentId]
   )
-  const overrides = row?.overrides ?? {}
-  for (const v of Object.values(overrides)) {
-    if ((v.action as string) === 'block_call') v.action = 'terminate_session'
+  // sql.unsafe() skips the postgres driver's type parsers — JSONB arrives as a raw
+  // JSON string. Parse it here the same way getAgentAlertConfig does.
+  let overrides: Record<string, { online_detection: boolean; action: OnlineAction }> = {}
+  if (row?.overrides) {
+    const raw = row.overrides
+    overrides = typeof raw === 'string' ? JSON.parse(raw) : raw as typeof overrides
   }
   return c.json({ overrides })
 })
@@ -144,19 +158,32 @@ export const sdkSecurityRouter = new Hono<{ Variables: Variables }>()
 sdkSecurityRouter.use('*', sdkKeyAuth)
 sdkSecurityRouter.use('*', rateLimitMiddleware)
 
+// GET /v1/sdk/security/agents/:id/tool-manifest
+// Returns { tool_manifest: string[], max_tool_calls_per_session: number | null }
+// Used by the langgraph-sdk to enforce the manifest at tool_start time.
+sdkSecurityRouter.get('/agents/:id/tool-manifest', async (c) => {
+  const tenantId = c.get('tenantId')
+  const agentId  = c.req.param('id')
+  const config   = await getAgentAlertConfig(tenantId, agentId)
+  return c.json({
+    tool_manifest:               config.tool_manifest,
+    max_tool_calls_per_session:  config.max_tool_calls_per_session,
+  })
+})
+
 // GET /v1/sdk/security/agents/:id/subcheck-config
 sdkSecurityRouter.get('/agents/:id/subcheck-config', async (c) => {
   const tenantId = c.get('tenantId')
   const agentId  = c.req.param('id')
-  const row = await queryRow<{ overrides: Record<string, { online_detection: boolean; action: OnlineAction }> }>(
+  const row = await queryRow<{ overrides: unknown }>(
     `SELECT overrides FROM agent_subcheck_overrides
      WHERE tenant_id = $1 AND agent_id = $2`,
     [tenantId, agentId]
   )
-  const overrides = row?.overrides ?? {}
-  // Migrate stale action values stored before the 3-action model
-  for (const v of Object.values(overrides)) {
-    if ((v.action as string) === 'block_call') v.action = 'terminate_session'
+  let overrides: Record<string, { online_detection: boolean; action: OnlineAction }> = {}
+  if (row?.overrides) {
+    const raw = row.overrides
+    overrides = typeof raw === 'string' ? JSON.parse(raw) : raw as typeof overrides
   }
   return c.json({ overrides })
 })
@@ -173,21 +200,25 @@ securityRouter.get('/agents/:id/alert-config', async (c) => {
 
 // PUT /v1/security/agents/:id/alert-config
 // Accepted body shapes (one per request):
-//   { composite_threshold: number }                    — shared fallback (1–100)
-//   { llm_composite_threshold: number | null }         — LLM-only (null = reset to default)
-//   { asi_composite_threshold: number | null }         — ASI-only (null = reset to default)
-//   { signal_id: string, threshold: number | null }    — per-signal (null = reset)
+//   { composite_threshold: number }                           — shared fallback (1–100)
+//   { llm_composite_threshold: number | null }                — LLM-only (null = reset)
+//   { asi_composite_threshold: number | null }                — ASI-only (null = reset)
+//   { signal_id: string, threshold: number | null }           — per-signal (null = reset)
+//   { tool_manifest: string[] }                               — allowed tool names for agent
+//   { max_tool_calls_per_session: number | null }             — hard cap (null = remove)
 // Invalidates Redis config cache after write.
 securityRouter.put('/agents/:id/alert-config', async (c) => {
   const tenantId = c.get('tenantId')
   const agentId  = c.req.param('id')
 
   let body: {
-    composite_threshold?:     number
-    llm_composite_threshold?: number | null
-    asi_composite_threshold?: number | null
-    signal_id?:               string
-    threshold?:               number | null
+    composite_threshold?:         number
+    llm_composite_threshold?:     number | null
+    asi_composite_threshold?:     number | null
+    signal_id?:                   string
+    threshold?:                   number | null
+    tool_manifest?:               string[]
+    max_tool_calls_per_session?:  number | null
   }
   try {
     body = await c.req.json()
@@ -196,15 +227,17 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
   }
 
   const { composite_threshold, llm_composite_threshold, asi_composite_threshold,
-          signal_id, threshold } = body
+          signal_id, threshold, tool_manifest, max_tool_calls_per_session } = body
 
-  const isComposite = composite_threshold !== undefined
-  const isLlm       = llm_composite_threshold !== undefined
-  const isAsi       = asi_composite_threshold !== undefined
-  const isSignal    = signal_id !== undefined
+  const isComposite    = composite_threshold !== undefined
+  const isLlm          = llm_composite_threshold !== undefined
+  const isAsi          = asi_composite_threshold !== undefined
+  const isSignal       = signal_id !== undefined
+  const isManifest     = tool_manifest !== undefined
+  const isMaxToolCalls = max_tool_calls_per_session !== undefined
 
-  if (!isComposite && !isLlm && !isAsi && !isSignal) {
-    return c.json({ error: 'Provide composite_threshold, llm_composite_threshold, asi_composite_threshold, or signal_id' }, 400)
+  if (!isComposite && !isLlm && !isAsi && !isSignal && !isManifest && !isMaxToolCalls) {
+    return c.json({ error: 'Provide at least one field to update' }, 400)
   }
 
   if (isComposite) {
@@ -230,12 +263,24 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
       return c.json({ error: 'threshold must be 0–999 or null' }, 400)
     }
   }
+  if (isManifest) {
+    if (!Array.isArray(tool_manifest) || tool_manifest.some(t => typeof t !== 'string')) {
+      return c.json({ error: 'tool_manifest must be an array of strings' }, 400)
+    }
+  }
+  if (isMaxToolCalls && max_tool_calls_per_session !== null) {
+    if (typeof max_tool_calls_per_session !== 'number' || max_tool_calls_per_session < 1) {
+      return c.json({ error: 'max_tool_calls_per_session must be a positive integer or null' }, 400)
+    }
+  }
 
   await upsertAgentAlertConfig(tenantId, agentId, {
-    ...(isComposite ? { composite_threshold }                  : {}),
-    ...(isLlm       ? { llm_composite_threshold }              : {}),
-    ...(isAsi       ? { asi_composite_threshold }              : {}),
-    ...(isSignal    ? { signal_id, signal_threshold: threshold ?? null } : {}),
+    ...(isComposite    ? { composite_threshold }                         : {}),
+    ...(isLlm          ? { llm_composite_threshold }                     : {}),
+    ...(isAsi          ? { asi_composite_threshold }                     : {}),
+    ...(isSignal       ? { signal_id, signal_threshold: threshold ?? null } : {}),
+    ...(isManifest     ? { tool_manifest }                               : {}),
+    ...(isMaxToolCalls ? { max_tool_calls_per_session }                  : {}),
   })
 
   // Invalidate per-agent Redis config cache so the scorer picks up the change

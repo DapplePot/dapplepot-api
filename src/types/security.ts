@@ -164,7 +164,7 @@ export interface AgentProfile {
   recentSessions:  AgentRecentSession[]
 }
 
-export type OnlineAction = 'alert' | 'sanitize' | 'terminate_session'
+export type OnlineAction = 'alert' | 'sanitize' | 'block_call' | 'terminate_session'
 
 /** Per-sub-check online detection config (stored in agent_subcheck_overrides JSONB). */
 export interface SubCheckOnlineConfig {

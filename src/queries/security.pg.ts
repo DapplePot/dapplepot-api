@@ -365,10 +365,12 @@ export async function getSignalRegistry(): Promise<SignalRegistry[]> {
 }
 
 export interface AgentAlertConfig {
-  composite_threshold:     number
-  llm_composite_threshold: number | null  // null = platform default (60)
-  asi_composite_threshold: number | null  // null = platform default (60)
-  signal_thresholds:       Record<string, number>
+  composite_threshold:         number
+  llm_composite_threshold:     number | null  // null = platform default (60)
+  asi_composite_threshold:     number | null  // null = platform default (60)
+  signal_thresholds:           Record<string, number>
+  tool_manifest:               string[]        // [] = not configured
+  max_tool_calls_per_session:  number | null   // null = not configured
 }
 
 export async function getAgentAlertConfig(
@@ -376,24 +378,38 @@ export async function getAgentAlertConfig(
   agentId: string,
 ): Promise<AgentAlertConfig> {
   const row = await queryRow<{
-    composite_threshold:     number
-    llm_composite_threshold: number | null
-    asi_composite_threshold: number | null
-    signal_thresholds:       Record<string, number>
+    composite_threshold:         number
+    llm_composite_threshold:     number | null
+    asi_composite_threshold:     number | null
+    signal_thresholds:           Record<string, number>
+    tool_manifest:               string[]
+    max_tool_calls_per_session:  number | null
   }>(
     `SELECT composite_threshold,
             llm_composite_threshold,
             asi_composite_threshold,
-            signal_thresholds
+            signal_thresholds,
+            tool_manifest,
+            max_tool_calls_per_session
      FROM agent_alert_config
      WHERE tenant_id = $1 AND agent_id = $2`,
     [tenantId, agentId],
   )
+  // sql.unsafe() skips the postgres driver's type parsers, so JSONB columns
+  // arrive as raw JSON strings rather than parsed JS objects. Parse them here.
+  function parseJsonb<T>(v: unknown, fallback: T): T {
+    if (v === null || v === undefined) return fallback
+    if (typeof v !== 'string') return v as T
+    try { return JSON.parse(v) as T } catch { return fallback }
+  }
+
   return {
-    composite_threshold:     row?.composite_threshold     ?? 60,
-    llm_composite_threshold: row?.llm_composite_threshold ?? null,
-    asi_composite_threshold: row?.asi_composite_threshold ?? null,
-    signal_thresholds:       row?.signal_thresholds       ?? {},
+    composite_threshold:        row?.composite_threshold        ?? 60,
+    llm_composite_threshold:    row?.llm_composite_threshold    ?? null,
+    asi_composite_threshold:    row?.asi_composite_threshold    ?? null,
+    signal_thresholds:          parseJsonb<Record<string, number>>(row?.signal_thresholds, {}),
+    tool_manifest:              parseJsonb<string[]>(row?.tool_manifest, []),
+    max_tool_calls_per_session: row?.max_tool_calls_per_session ?? null,
   }
 }
 
@@ -401,15 +417,17 @@ export async function upsertAgentAlertConfig(
   tenantId: string,
   agentId: string,
   opts: {
-    composite_threshold?:     number
-    llm_composite_threshold?: number | null  // null = reset to platform default
-    asi_composite_threshold?: number | null  // null = reset to platform default
-    signal_id?:               string
-    signal_threshold?:        number | null  // null = remove override
+    composite_threshold?:         number
+    llm_composite_threshold?:     number | null  // null = reset to platform default
+    asi_composite_threshold?:     number | null  // null = reset to platform default
+    signal_id?:                   string
+    signal_threshold?:            number | null  // null = remove override
+    tool_manifest?:               string[]
+    max_tool_calls_per_session?:  number | null  // null = remove override
   }
 ): Promise<void> {
   const { composite_threshold, llm_composite_threshold, asi_composite_threshold,
-          signal_id, signal_threshold } = opts
+          signal_id, signal_threshold, tool_manifest, max_tool_calls_per_session } = opts
 
   if (composite_threshold !== undefined) {
     await queryRow(
@@ -467,6 +485,28 @@ export async function upsertAgentAlertConfig(
         [tenantId, agentId, signal_id],
       )
     }
+  }
+
+  if (tool_manifest !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, tool_manifest, updated_at)
+       VALUES ($1, $2, $3::jsonb, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         tool_manifest = EXCLUDED.tool_manifest,
+         updated_at    = now()`,
+      [tenantId, agentId, JSON.stringify(tool_manifest)],
+    )
+  }
+
+  if (max_tool_calls_per_session !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, max_tool_calls_per_session, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         max_tool_calls_per_session = EXCLUDED.max_tool_calls_per_session,
+         updated_at                 = now()`,
+      [tenantId, agentId, max_tool_calls_per_session],
+    )
   }
 }
 
