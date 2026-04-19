@@ -8,7 +8,7 @@ const envSchema = z.object({
   CLICKHOUSE_USER: z.string().default('dapplepot'),
   CLICKHOUSE_PASSWORD: z.string().default('dapplepot'),
   REDIS_URL: z.string().url(),
-  KAFKA_BOOTSTRAP_SERVERS: z.string().default('localhost:9092'),
+  SECURITY_SERVICE_URL: z.string().url().default('http://localhost:8001'),
   DAPPLEPOT_JWT_SECRET: z.string().min(1),
   DAPPLEPOT_JWT_ACCESS_EXPIRES_IN: z.string().default('15m'),
   DAPPLEPOT_JWT_REFRESH_EXPIRES_IN: z.string().default('7d'),

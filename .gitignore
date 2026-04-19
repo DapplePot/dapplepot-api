@@ -30,3 +30,6 @@ Thumbs.db
 
 # pnpm
 .pnpm-store/
+
+# Claude Code
+.claude/

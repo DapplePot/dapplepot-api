@@ -14,6 +14,7 @@
     "lint": "eslint src/ tests/",
     "lint:fix": "eslint --fix src/ tests/",
     "migrate": "tsx scripts/migrate.ts",
+    "migrate-clickhouse": "tsx scripts/migrate-clickhouse.ts",
     "seed-admin": "tsx scripts/seed_admin.ts",
     "seed-superadmin": "tsx scripts/seed_superadmin.ts"
   },

@@ -21,7 +21,7 @@ const applied = new Set(
   (await sql`SELECT filename FROM _migrations`).map((r) => r.filename as string)
 )
 
-const migrationsDir = join(__dirname, '..', 'migrations')
+const migrationsDir = join(__dirname, '..', 'db', 'postgres')
 const files = readdirSync(migrationsDir)
   .filter((f) => f.endsWith('.sql'))
   .sort()

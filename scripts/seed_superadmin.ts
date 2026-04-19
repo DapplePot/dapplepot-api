@@ -23,7 +23,7 @@ async function seed() {
 
     // tenant_id is NULL — superadmin is not scoped to any tenant.
     // Conflict target uses the partial unique index: uq_users_superadmin_email
-    // (created in migrations/003_users_table.sql)
+    // (created in db/postgres/004_users_table.sql)
     await sql`
         INSERT INTO users (tenant_id, email, name, password_hash, role, status)
         VALUES (NULL, ${SUPERADMIN_EMAIL}, ${SUPERADMIN_NAME}, ${passwordHash}, 'superadmin', 'active')
