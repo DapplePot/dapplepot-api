@@ -107,15 +107,13 @@ async function processEvents(events: NormalizedEvent[], batchId: string): Promis
     console.error('[ingest] event-appender failed:', (err as Error).message)
   }
 
-  // Session upsert + security forward — per-event, run in parallel
-  await Promise.allSettled(
-    events.map(async (event) => {
-      await Promise.allSettled([
-        upsertEvent(event).catch(e =>
-          console.error('[ingest] session-writer failed event %s:', event.eventId, (e as Error).message)
-        ),
-        forwardToSecurity(event),
-      ])
-    })
-  )
+  // Session upsert — sequential to preserve state machine ordering within a session
+  for (const event of events) {
+    await upsertEvent(event).catch(e =>
+      console.error('[ingest] session-writer failed event %s:', event.eventId, (e as Error).message)
+    )
+  }
+
+  // Security forward — fire in parallel, independent of session state
+  await Promise.allSettled(events.map(e => forwardToSecurity(e)))
 }

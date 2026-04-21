@@ -536,7 +536,7 @@ export async function getSessionActions(
            COALESCE(sf.emitted_at, sf.created_at) AS triggered_at
         FROM security_findings sf
         LEFT JOIN session_actions sa
-               ON sa.session_id = sf.session_id::text
+               ON sa.session_id = sf.session_id
               AND sa.sub_check_id = sf.sub_check_id
         WHERE sf.session_id = $1::uuid
           AND sf.tenant_id = $2::uuid

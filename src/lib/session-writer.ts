@@ -34,8 +34,9 @@ type Transition = [string, string] // [current_status, event_type]
 
 const TRANSITIONS = new Map<string, string>([
   ['stub|graph_start', 'open'],
-  ['open|graph_end', 'finalised'],
+  ['open|graph_end',   'finalised'],
   ['open|graph_error', 'terminated'],
+  ['stub|graph_end',   'finalised'],  // session_end wins the race before session_start arrives
 ])
 
 const TERMINAL = new Set(['terminated', 'finalised'])
@@ -105,9 +106,11 @@ function buildPatch(
       }
 
     case 'graph_end': {
-      const duration = currentStartedAt
-        ? Math.round((new Date(emittedAt).getTime() - currentStartedAt.getTime()))
-        : null
+      const duration = typeof p.latency_ms === 'number'
+        ? p.latency_ms
+        : currentStartedAt
+          ? Math.round((new Date(emittedAt).getTime() - currentStartedAt.getTime()))
+          : null
       return {
         ...emptyPatch(),
         newStatus: 'finalised',
@@ -119,9 +122,11 @@ function buildPatch(
     }
 
     case 'graph_error': {
-      const duration = currentStartedAt
-        ? Math.round((new Date(emittedAt).getTime() - currentStartedAt.getTime()))
-        : null
+      const duration = typeof p.latency_ms === 'number'
+        ? p.latency_ms
+        : currentStartedAt
+          ? Math.round((new Date(emittedAt).getTime() - currentStartedAt.getTime()))
+          : null
       const errorType = String(p.error_type ?? '')
       const errorMessage = String(p.error_message ?? '')
       const isSecurity = errorType.includes('SecurityViolationError') || errorMessage.includes('SecurityViolationError')
@@ -206,7 +211,16 @@ export async function upsertEvent(event: NormalizedEvent): Promise<void> {
     const currentStartedAt = row.started_at ? new Date(row.started_at as string) : null
     const lastSeq = row.last_seq as number
 
-    if (event.sequenceIndex <= lastSeq) return
+    // security_finding events are out-of-band (emitted inline by the SDK interceptor
+    // before the buffer flushes session_start). They must not update last_seq or the
+    // session_start event (seq=0) would be rejected as a duplicate after last_seq
+    // was advanced by the security_finding's copied sequence_index.
+    const isOutOfBand = internalType === 'security_finding'
+    // graph_end / graph_error are terminal closure events — never drop them on a stale
+    // sequence index. When events split across batches the closure event can land in a
+    // later batch with batchSeq=0, which would otherwise be < lastSeq from earlier events.
+    const isClosingEvent = internalType === 'graph_end' || internalType === 'graph_error'
+    if (!isOutOfBand && !isClosingEvent && event.sequenceIndex <= lastSeq) return
     if (!isLegalTransition(currentStatus, internalType)) return
 
     const patch = buildPatch(internalType, event, currentStartedAt)
@@ -235,7 +249,7 @@ export async function upsertEvent(event: NormalizedEvent): Promise<void> {
                              ELSE graph_runs
                            END,
          last_active_at  = $15::timestamptz,
-         last_seq        = GREATEST(last_seq, $16),
+         last_seq        = CASE WHEN $19::boolean THEN last_seq ELSE GREATEST(last_seq, $16) END,
          version         = version + 1,
          updated_at      = now()
        WHERE session_id = $17
@@ -260,6 +274,7 @@ export async function upsertEvent(event: NormalizedEvent): Promise<void> {
         event.sequenceIndex,
         event.sessionId,
         currentVersion,
+        isOutOfBand,
       ],
     )
 

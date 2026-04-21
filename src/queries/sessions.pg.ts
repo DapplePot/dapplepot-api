@@ -15,6 +15,7 @@ interface RawSession extends Record<string, unknown> {
   ended_at: Date | null
   duration_ms: number | null
   last_active_at: Date | null
+  exit_reason: string | null
   alert_count: number
 }
 
@@ -55,6 +56,7 @@ function mapSessionSummary(row: RawSession): SessionSummary {
     endedAt: row.ended_at?.toISOString() ?? null,
     durationMs: row.duration_ms,
     lastActiveAt: row.last_active_at?.toISOString() ?? null,
+    exitReason: row.exit_reason ?? null,
     alertCount: row.alert_count,
   }
 }
@@ -71,7 +73,7 @@ export async function getSessionList(
     `SELECT
       s.session_id, s.status, s.agent_id, s.agent_version, s.environment,
       s.deployment_id, s.user_context_id, s.started_at, s.ended_at,
-      s.duration_ms, s.last_active_at,
+      s.duration_ms, s.last_active_at, s.exit_reason,
       COUNT(a.alert_id)::int AS alert_count
     FROM sessions s
     LEFT JOIN alerts a ON a.session_id = s.session_id
@@ -201,7 +203,7 @@ export async function getLiveSessions(tenantId: string): Promise<SessionSummary[
     `SELECT
       s.session_id, s.status, s.agent_id, s.agent_version, s.environment,
       s.deployment_id, s.user_context_id, s.started_at, s.ended_at,
-      s.duration_ms, s.last_active_at,
+      s.duration_ms, s.last_active_at, s.exit_reason,
       0::int AS alert_count
     FROM sessions s
     WHERE s.tenant_id      = $1
