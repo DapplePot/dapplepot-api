@@ -13,9 +13,9 @@ src/
   index.ts             Hono app entry; mounts all routers; starts server on PORT (default 3000)
 
   routes/
-    ingest.ts          POST /v1/ingest/events — 3-way fanout (ClickHouse + Postgres + security)
-                       sdkKeyAuth middleware; bulk ClickHouse insert; per-event Postgres upsert;
-                       fire-and-forget security forward via security-client.ts
+    ingest.ts          POST /v1/ingest/events — normalize SDK v2 envelopes, batch idempotency
+                       via Redis (dp:batch:{batchId}, TTL 3600s), then fire-and-forget processEvents()
+                       sdkKeyAuth middleware; MAX_BATCH = 100
     auth.ts            POST /v1/auth/login|logout|refresh|forgot-password|reset-password|accept-invite
     sessions.ts        GET /v1/sessions, /v1/sessions/:id, /v1/sessions/:id/trace (cursor pagination)
                        GET /v1/sessions/live (SSE — live session feed)
@@ -34,8 +34,15 @@ src/
   lib/
     session-writer.ts  CAS upsert with SELECT FOR UPDATE SKIP LOCKED; state machine:
                          stub → open (graph_start)
+                         stub → finalised (graph_end race win before graph_start)
                          open → finalised (graph_end)
                          open → terminated (graph_error)
+                       security_finding: out-of-band — patches graph_runs, never advances last_seq
+                       graph_end/graph_error: closing events — never dropped on stale sequence index
+                       checkpoint_write: updates graphState only
+                       exit_reason: read from payload if present; else 'security_terminated' when
+                         SecurityViolationError or DapplePotSessionTerminatedError detected
+                       graph_runs: JSONB array tracks all lifecycle entries
                        SDK_TO_INTERNAL map: session_start→graph_start, session_end→graph_end,
                          session_error→graph_error
     event-appender.ts  ClickHouse bulk insert to obs_events (36 cols);
@@ -46,6 +53,23 @@ src/
     db.ts              postgres.js pool singleton
     clickhouse.ts      @clickhouse/client singleton
     redis.ts           ioredis singleton
+
+  queries/             Extracted DB query functions — one file per resource
+    sessions.pg.ts     Session list, detail, trace, state history queries
+    security.pg.ts     Risk scores, findings (post_session + cross_session), agent profiles, signal registry, alert config
+                       getSessionActions: now returns triggerEventType per action row
+    security.ch.ts     ClickHouse security queries
+    sessions.ch.ts     ClickHouse session queries
+    analytics.ch.ts    ClickHouse analytics queries
+    agents.pg.ts       Agent registry queries
+    alerts.pg.ts       Alert feed + detail queries
+    channels.pg.ts     Notification channel queries
+    rules.ts           Policy rule queries
+    users.pg.ts        User management queries
+    tenants.pg.ts      Tenant queries
+    sdk-keys.pg.ts     SDK key lookup + reveal queries
+    invites.pg.ts      Invite management queries
+    refresh-tokens.pg.ts, password-resets.pg.ts
 
   middleware/
     auth.ts            JWT verify (DAPPLEPOT_JWT_SECRET); sdk_key lookup from Postgres
@@ -58,7 +82,6 @@ db/
                        Run with: pnpm migrate
   clickhouse/          4 ClickHouse schema files (001_obs_events.sql … 004_obs_session_tokens.sql)
                        Run with: pnpm migrate-clickhouse
-    session.ts, analytics.ts, security.ts, alert.ts, auth.ts, agent.ts, …
 ```
 
 ---
@@ -68,22 +91,42 @@ db/
 ```
 POST /v1/ingest/events  (header: x-sdk-key)
   │
-  ├─ [1] event-appender.ts
-  │    INSERT INTO obs_events (batch, 36 cols)
-  │    RollingDedup: skip exact-duplicate event_id within 60s window
+  ├─ Normalize SDK v2 envelopes (dp_event_type / dp_session_id aliases)
+  ├─ Batch idempotency: Redis SET dp:batch:{batchId} NX EX 3600  ← early return if duplicate
+  ├─ Return 202 immediately (fire-and-forget below)
   │
-  └─ [2] Promise.allSettled([...]) per event:
-       ├─ session-writer.ts
-       │    SELECT FOR UPDATE SKIP LOCKED on sessions
-       │    CAS upsert: state machine transition
-       │    INSERT session_events row
+  └─ processEvents() [background, void]
        │
-       └─ security-client.ts  (graph_start / graph_end / graph_error / security_finding only)
+       ├─ [1] event-appender.ts (bulk, whole batch)
+       │    INSERT INTO obs_events (batch, 36 cols)
+       │    RollingDedup: skip exact-duplicate event_id within 60s window
+       │
+       ├─ [2] session-writer.ts (sequential — preserves state machine ordering)
+       │    For each event:
+       │      SELECT FOR UPDATE SKIP LOCKED on sessions
+       │      CAS upsert: state machine transition, graph_runs append
+       │      Out-of-band: security_finding skips last_seq advance
+       │      Closing: graph_end/graph_error never dropped on stale seq
+       │
+       └─ [3] security-client.ts (parallel via Promise.allSettled)
             POST {SECURITY_SERVICE_URL}/v1/evaluate
-            5s timeout, fire-and-forget
+            5s timeout, fire-and-forget (graph_start/end/error + security_finding only)
 ```
 
-ClickHouse write completes before the per-event fan-out starts. All per-event operations run concurrently via `Promise.allSettled` — a failure in one event's security forward does not fail the others.
+HTTP response returns 202 before any of the three writes complete. A failure in one write does not affect the others.
+
+---
+
+## SDK v2 Envelope Normalization
+
+`normalize()` in `ingest.ts` accepts both prefixed and un-prefixed field names:
+
+| Internal field | SDK v2 field | Fallback |
+|----------------|-------------|---------|
+| `sdkEventType` | `dp_event_type` | `event_type` |
+| `sessionId` | `dp_session_id` | `session_id` |
+| `agentId` | `dp_agent_id` | `agent_id` |
+| `tenantId` | `dp_tenant_id` | `tenant_id` (from sdk_key lookup) |
 
 ---
 
@@ -115,14 +158,22 @@ Partitioned by `toYYYYMM(emitted_at)`. Primary key: `(tenant_id, session_id, emi
 
 ```
                   graph_start
-(no row) ──────────────────────→ open
+(no row) ──────────────────────→ stub → open
+                  graph_end (before graph_start arrives)
+(no row) ──────────────────────→ finalised   (race guard)
                   graph_end
     open ──────────────────────→ finalised  (immutable)
                   graph_error
     open ──────────────────────→ terminated (immutable)
+                                 exit_reason = 'security_terminated' if SecurityViolationError
 ```
 
 SDK sends `session_start/end/error`; `session-writer.ts` translates via `SDK_TO_INTERNAL` before applying the state machine.
+
+**Special event handling:**
+- `security_finding` — out-of-band: patches `graph_runs` array but never advances `last_seq` (SDK emits these inline before the buffer flushes session_start)
+- `checkpoint_write` — updates `graph_state` only
+- `graph_end`/`graph_error` — closing events: never discarded on stale sequence index
 
 ---
 
@@ -160,11 +211,14 @@ PORT=3000
 
 | Need to... | File |
 |-----------|------|
-| Change ingest fan-out logic | `src/routes/ingest.ts` |
+| Change ingest fan-out logic | `src/routes/ingest.ts` → `processEvents()` |
+| Change batch idempotency TTL | `src/routes/ingest.ts` → `BATCH_DEDUP_TTL` |
 | Change session state machine | `src/lib/session-writer.ts` → `SDK_TO_INTERNAL` + `TRANSITIONS` |
+| Change closing/out-of-band event logic | `src/lib/session-writer.ts` → `isClosingEvent` / `isOutOfBand` |
 | Change ClickHouse schema / hot fields | `src/lib/event-appender.ts` |
 | Change which events go to security | `src/lib/security-client.ts` → `SECURITY_EVENT_TYPES` set |
 | Add a new REST route | `src/routes/<resource>.ts` + mount in `src/index.ts` |
+| Add a DB query | `src/queries/<resource>.pg.ts` or `.ch.ts` |
 | Add a shared type | `src/types/<resource>.ts` → run `pnpm sync-types` in dapplepot-ui |
 | Change JWT expiry | `src/routes/auth.ts` |
 | Change rate limits | `src/middleware/rate-limit.ts` |

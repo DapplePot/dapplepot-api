@@ -29,29 +29,35 @@ pnpm dev               # http://localhost:3000
 | `DAPPLEPOT_JWT_SECRET` | ✅ | — | JWT signing secret |
 | `PORT` | — | `3000` | HTTP listen port |
 
-## Ingest — 3-Way Fanout
+## Ingest — Fire-and-Forget Fanout
 
-`POST /v1/ingest/events` (authenticated via `x-sdk-key`) is the write path. For each event batch it fans out in parallel:
+`POST /v1/ingest/events` (authenticated via `x-sdk-key`) is the write path. The route normalizes SDK v2 envelopes, checks batch idempotency via Redis (`dp:batch:{batchId}`, TTL 3600s), returns **202 immediately**, then fans out in the background:
 
 ```
-POST /v1/ingest/events
+POST /v1/ingest/events  →  202 (immediate)
+  [background: processEvents()]
   ├─ ClickHouse → obs_events (bulk insert, 36 cols, rolling dedup 60s)
-  ├─ Postgres   → sessions (CAS upsert, state machine: stub→open→finalised/terminated)
-  └─ HTTP POST  → {SECURITY_SERVICE_URL}/v1/evaluate
+  ├─ Postgres   → sessions (CAS upsert, sequential per event, state machine)
+  └─ HTTP POST  → {SECURITY_SERVICE_URL}/v1/evaluate  (parallel via Promise.allSettled)
                   (graph_start, graph_end, graph_error, security_finding only)
 ```
 
-All three writes use `Promise.allSettled` — a failure in one leg does not fail the ingest request.
+Max batch size: 100 events. A failure in one leg does not affect the others.
 
 ## Session State Machine
 
-The session-writer implements a compare-and-swap upsert with `SELECT FOR UPDATE SKIP LOCKED`:
+The session-writer implements a compare-and-swap upsert with `SELECT FOR UPDATE SKIP LOCKED`. Events are processed **sequentially** within each batch to preserve ordering.
 
-| Event received | Current state | New state |
-|----------------|--------------|-----------|
-| `graph_start` | — | `open` |
-| `graph_end` | `open` | `finalised` |
-| `graph_error` | `open` | `terminated` |
+| Event received | Current state | New state | Notes |
+|----------------|--------------|-----------|-------|
+| `graph_start` | stub / — | `open` | |
+| `graph_end` | stub | `finalised` | race guard: end arrives before start |
+| `graph_end` | `open` | `finalised` | |
+| `graph_error` | `open` | `terminated` | `exit_reason` read from payload; falls back to `security_terminated` if `SecurityViolationError` or `DapplePotSessionTerminatedError` in error fields |
+| `security_finding` | any | unchanged | out-of-band: patches `graph_runs`, never advances `last_seq` |
+| `checkpoint_write` | any | unchanged | updates `graph_state` only |
+
+`graph_end`/`graph_error` are never dropped on a stale sequence index (closing events always land).
 
 Event type mapping (SDK → internal): `session_start→graph_start`, `session_end→graph_end`, `session_error→graph_error`.
 
@@ -76,10 +82,11 @@ Event type mapping (SDK → internal): `session_start→graph_start`, `session_e
 
 | File | Description |
 |------|-------------|
-| `src/routes/ingest.ts` | 3-way fanout handler; `sdkKeyAuth` middleware |
-| `src/lib/session-writer.ts` | CAS upsert, state machine, `SDK_TO_INTERNAL` map |
+| `src/routes/ingest.ts` | Normalize, deduplicate, 202, fire-and-forget `processEvents()` |
+| `src/lib/session-writer.ts` | CAS upsert, state machine, `SDK_TO_INTERNAL` map, out-of-band/closing logic |
 | `src/lib/event-appender.ts` | ClickHouse bulk insert, `RollingDedup` (60s window) |
 | `src/lib/security-client.ts` | Fire-and-forget HTTP forward to security service (5s timeout) |
+| `src/queries/` | Extracted DB query functions (14 files, `.pg.ts` / `.ch.ts`) |
 | `src/lib/db.ts` | postgres.js pool |
 | `src/lib/clickhouse.ts` | @clickhouse/client singleton |
 | `src/lib/redis.ts` | ioredis singleton |
