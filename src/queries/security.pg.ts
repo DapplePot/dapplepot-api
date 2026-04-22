@@ -189,7 +189,7 @@ export async function getSessionFindings(
         created_at
      FROM security_findings
      WHERE session_id = $1 AND tenant_id = $2
-       AND detection_phase = 'post_session'
+       AND detection_phase IN ('post_session', 'cross_session')
      ORDER BY check_score DESC, created_at ASC`,
     [sessionId, tenantId]
   )
@@ -521,6 +521,7 @@ export async function getSessionActions(
        SELECT DISTINCT ON (sf.sub_check_id, sf.event_id)
            sf.finding_id,
            sf.event_id,
+           sf.event_type,
            sf.session_id,
            sf.tenant_id,
            sa.agent_id,
@@ -547,9 +548,10 @@ export async function getSessionActions(
     [sessionId, tenantId],
   )
   return rows.map(r => ({
-    id:            r.finding_id as string,
-    eventId:       r.event_id as string,
-    sessionId:     r.session_id,
+    id:              r.finding_id as string,
+    eventId:         r.event_id as string,
+    triggerEventType: r.event_type as string | null ?? null,
+    sessionId:       r.session_id,
     tenantId:      r.tenant_id,
     agentId:       r.agent_id ?? null,
     subCheckId:    r.sub_check_id,

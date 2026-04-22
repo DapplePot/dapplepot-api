@@ -174,21 +174,22 @@ export interface SubCheckOnlineConfig {
 
 /** Online detection row — all online findings for a session with their resolved action. */
 export interface SessionAction {
-  id:             string            // finding_id UUID
-  eventId:        string            // event_id that triggered this check
-  sessionId:      string
-  tenantId:       string
-  agentId:        string | null
-  subCheckId:     string            // "PI-01a"
-  owaspSignalId:  string            // "OW-LLM01"
-  checkLabel:     string            // human-readable check name
-  severity:       string
-  category:       string
-  framework:      string            // "LLM" | "ASI"
-  matchedText:    string | null     // snippet that triggered the check
-  detail:         string | null
-  actionTaken:    OnlineAction      // all 5 action types including monitor
-  triggeredAt:    string            // ISO 8601
+  id:               string            // finding_id UUID
+  eventId:          string            // event_id that triggered this check
+  triggerEventType: string | null     // event_type of the triggering event e.g. "llm_start"
+  sessionId:        string
+  tenantId:         string
+  agentId:          string | null
+  subCheckId:       string            // "PI-01a"
+  owaspSignalId:    string            // "OW-LLM01"
+  checkLabel:       string            // human-readable check name
+  severity:         string
+  category:         string
+  framework:        string            // "LLM" | "ASI"
+  matchedText:      string | null     // snippet that triggered the check
+  detail:           string | null
+  actionTaken:      OnlineAction      // all 5 action types including monitor
+  triggeredAt:      string            // ISO 8601
 }
 
 export interface InjectionSignature {

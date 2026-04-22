@@ -129,8 +129,12 @@ function buildPatch(
           : null
       const errorType = String(p.error_type ?? '')
       const errorMessage = String(p.error_message ?? '')
-      const isSecurity = errorType.includes('SecurityViolationError') || errorMessage.includes('SecurityViolationError')
-      const exitReason = isSecurity ? 'security_terminated' : 'error'
+      const isSecurity = errorType.includes('SecurityViolationError')
+        || errorMessage.includes('SecurityViolationError')
+        || errorType.includes('DapplePotSessionTerminatedError')
+      const exitReason = typeof p.exit_reason === 'string' && p.exit_reason
+        ? p.exit_reason
+        : isSecurity ? 'security_terminated' : 'error'
       return {
         ...emptyPatch(),
         newStatus: 'terminated',
