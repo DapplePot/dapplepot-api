@@ -3,6 +3,7 @@ import { jwtAuth, sdkKeyAuth } from '../middleware/auth.js'
 import { rateLimitMiddleware } from '../middleware/ratelimit.js'
 import { queryRows, queryRow } from '../lib/postgres.js'
 import { redis } from '../lib/redis.js'
+import { env } from '../env.js'
 import {
   cached,
   CACHE_TTL_SECURITY_OVERVIEW,
@@ -157,6 +158,40 @@ securityRouter.get('/agents/:id/subcheck-config', async (c) => {
 export const sdkSecurityRouter = new Hono<{ Variables: Variables }>()
 sdkSecurityRouter.use('*', sdkKeyAuth)
 sdkSecurityRouter.use('*', rateLimitMiddleware)
+
+// POST /v1/sdk/security/online-check
+// Proxies the request body to dapplepot-security /v1/online-check and returns
+// findings synchronously. SDK key auth only — no JWT required.
+// The SDK calls this instead of running detection logic locally.
+sdkSecurityRouter.post('/online-check', async (c) => {
+  let body: unknown
+  try {
+    body = await c.req.json()
+  } catch (err) {
+    console.error('[sdk/online-check] failed to parse JSON:', (err as Error).message)
+    return c.json({ error: 'Invalid JSON body' }, 400)
+  }
+
+  const url = `${env.SECURITY_SERVICE_URL}/v1/online-check`
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(5000),
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      console.warn('[sdk/online-check] security service returned %d', res.status)
+      return c.json({ findings: [] }, 200)
+    }
+    return c.json(data)
+  } catch (err) {
+    console.error('[sdk/online-check] failed to reach security service at %s:', url, (err as Error).message)
+    // fail open — never block the agent if security service is unreachable
+    return c.json({ findings: [] }, 200)
+  }
+})
 
 // GET /v1/sdk/security/agents/:id/tool-manifest
 // Returns { tool_manifest: string[], max_tool_calls_per_session: number | null }
