@@ -3,7 +3,7 @@ const { sign, verify } = jwt
 import { randomBytes, createHash } from 'crypto'
 import { env } from '../env.js'
 
-export type Role = 'admin' | 'editor' | 'viewer'
+export type Role = 'admin' | 'editor' | 'viewer' | 'superadmin'
 
 export interface AccessTokenPayload {
     sub: string

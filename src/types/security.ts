@@ -40,6 +40,8 @@ export interface SessionRiskScore {
   // v3 additions
   attackChainsDetected?:  string[]        // e.g. ["indirect_injection_to_exfil"]
   amplification?:         number          // e.g. 1.25 (1.0 = no chain fired)
+  rawLlmComposite?:       number
+  rawAsiComposite?:       number
   confidenceBand?:        string          // "high" | "medium" etc.
   trustScore?:            number          // agent trust score 0–100
   trustTrend?:            TrustTrend

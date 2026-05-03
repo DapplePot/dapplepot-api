@@ -2,6 +2,7 @@ import { randomBytes, createHash } from 'crypto'
 import { sql, queryRows } from '../lib/postgres.js'
 
 interface TenantRow {
+    [key: string]: unknown
     tenant_id: string
     name: string
     enabled: boolean

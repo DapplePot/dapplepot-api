@@ -21,7 +21,9 @@ const envSchema = z.object({
   RESEND_API_KEY: z.string().optional(),
   DAPPLEPOT_APP_URL: z.string().default('http://localhost:5173'),
   API_HOST: z.string().default('0.0.0.0'),
+  // Azure App Service injects PORT — fall back to API_PORT then 3000
   API_PORT: z.coerce.number().default(3000),
+  PORT: z.coerce.number().optional(),
   API_CORS_ORIGIN: z.string().default('http://localhost:5173'),
   CACHE_TTL_OVERVIEW: z.coerce.number().default(30),
   CACHE_TTL_ANALYTICS: z.coerce.number().default(60),

@@ -38,7 +38,7 @@ async function isRateLimited(key: string, max: number, windowMs: number): Promis
 }
 
 function buildLoginResponse(
-    user: { userId: string; tenantId: string; email: string; name: string; role: 'admin' | 'editor' | 'viewer'; status: 'active' | 'disabled'; createdAt: string },
+    user: { userId: string; tenantId: string | null; email: string; name: string; role: 'superadmin' | 'admin' | 'editor' | 'viewer'; status: 'active' | 'disabled'; createdAt: string },
     accessToken: string,
     refreshToken: string
 ): LoginResponse {
@@ -48,7 +48,7 @@ function buildLoginResponse(
         expiresIn: ACCESS_EXPIRES_IN_SECONDS,
         user: {
             userId: user.userId,
-            tenantId: user.tenantId,
+            tenantId: user.tenantId ?? '',
             email: user.email,
             name: user.name,
             role: user.role,
@@ -228,7 +228,7 @@ authRouter.post('/accept-invite', async (c) => {
     const passwordHash = await bcryptHash(parsed.data.password, 12)
 
     const { sql } = await import('../lib/postgres.js')
-    type NewUser = { userId: string; tenantId: string; email: string; name: string; role: 'admin' | 'editor' | 'viewer'; status: 'active' | 'disabled'; createdAt: string }
+    type NewUser = { userId: string; tenantId: string | null; email: string; name: string; role: 'superadmin' | 'admin' | 'editor' | 'viewer'; status: 'active' | 'disabled'; createdAt: string }
     let newUser: NewUser | undefined
 
     await sql.begin(async (tx) => {
@@ -244,7 +244,7 @@ authRouter.post('/accept-invite', async (c) => {
             tenantId: r['tenant_id'] as string,
             email: r['email'] as string,
             name: r['name'] as string,
-            role: r['role'] as 'admin' | 'editor' | 'viewer',
+            role: r['role'] as 'superadmin' | 'admin' | 'editor' | 'viewer',
             status: r['status'] as 'active' | 'disabled',
             createdAt: r['created_at'] instanceof Date ? (r['created_at'] as Date).toISOString() : String(r['created_at']),
         }

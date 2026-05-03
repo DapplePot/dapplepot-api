@@ -10,7 +10,7 @@ export async function queryRow<T extends Record<string, unknown>>(
 ): Promise<T | undefined> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const rows = await sql.unsafe(query, params as any[])
-  return rows[0] as T | undefined
+  return rows[0] as unknown as T | undefined
 }
 
 export async function queryRows<T extends Record<string, unknown>>(

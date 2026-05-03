@@ -17,6 +17,7 @@ export interface SessionSummary {
   durationMs: number | null
   lastActiveAt: string | null
   alertCount: number
+  exitReason?: string | null
 }
 
 export interface SessionDetail {

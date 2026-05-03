@@ -77,7 +77,7 @@ ingestRouter.post('/events', sdkKeyAuth, async (c) => {
   // Batch-level idempotency via Redis
   const batchId = String(body.batch_id ?? randomUUID())
   const dedupKey = `dp:batch:${batchId}`
-  const isNew = await redis.set(dedupKey, '1', 'NX', 'EX', BATCH_DEDUP_TTL)
+  const isNew = await redis.set(dedupKey, '1', 'EX', BATCH_DEDUP_TTL, 'NX')
   if (!isNew) {
     return c.json({ accepted: rawEvents.length, rejected: 0 }, 202)
   }

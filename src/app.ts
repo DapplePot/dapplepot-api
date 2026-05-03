@@ -1,5 +1,6 @@
 import { Hono } from 'hono'
 import { corsMiddleware } from './middleware/cors.js'
+import { securityHeaders } from './middleware/security-headers.js'
 import { mountRoutes } from './routes/index.js'
 import { checkPostgres } from './lib/postgres.js'
 import { checkClickHouse } from './lib/clickhouse.js'
@@ -10,6 +11,7 @@ type Variables = { tenantId: string; userId: string; role: string }
 
 const app = new Hono<{ Variables: Variables }>()
 
+app.use('*', securityHeaders)
 app.use('*', corsMiddleware)
 
 app.get('/health', async (c) => {

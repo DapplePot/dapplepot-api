@@ -6,7 +6,7 @@ import { closeRedis } from './lib/redis.js'
 import app from './app.js'
 
 serve(
-  { fetch: app.fetch, port: env.API_PORT, hostname: env.API_HOST },
+  { fetch: app.fetch, port: env.PORT ?? env.API_PORT, hostname: env.API_HOST },
   (info) => {
     console.log(`dapplepot-api listening on http://${info.address}:${info.port}`)
   }

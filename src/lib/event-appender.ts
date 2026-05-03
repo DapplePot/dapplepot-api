@@ -188,7 +188,7 @@ export async function appendEvents(events: NormalizedEvent[], batchId: string): 
   await clickhouse.insert({
     table: 'obs_events',
     values: rows,
-    columns: COLUMNS,
+    columns: COLUMNS as unknown as [string, ...string[]],
     format: 'JSONCompactEachRow',
   })
 
