@@ -106,10 +106,10 @@ function buildPatch(
       }
 
     case 'graph_end': {
-      const duration = typeof p.latency_ms === 'number'
-        ? p.latency_ms
-        : currentStartedAt
-          ? Math.round((new Date(emittedAt).getTime() - currentStartedAt.getTime()))
+      const duration = currentStartedAt
+        ? Math.round((new Date(emittedAt).getTime() - currentStartedAt.getTime()))
+        : typeof p.latency_ms === 'number'
+          ? p.latency_ms
           : null
       return {
         ...emptyPatch(),
@@ -122,10 +122,10 @@ function buildPatch(
     }
 
     case 'graph_error': {
-      const duration = typeof p.latency_ms === 'number'
-        ? p.latency_ms
-        : currentStartedAt
-          ? Math.round((new Date(emittedAt).getTime() - currentStartedAt.getTime()))
+      const duration = currentStartedAt
+        ? Math.round((new Date(emittedAt).getTime() - currentStartedAt.getTime()))
+        : typeof p.latency_ms === 'number'
+          ? p.latency_ms
           : null
       const errorType = String(p.error_type ?? '')
       const errorMessage = String(p.error_message ?? '')

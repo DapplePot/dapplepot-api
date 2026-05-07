@@ -1,12 +1,15 @@
 import { createClient } from '@clickhouse/client'
 import { env } from '../env.js'
 
+const chProtocol = env.CLICKHOUSE_PORT === 8443 ? 'https' : 'http'
+
 export const clickhouse = createClient({
-  url: `https://${env.CLICKHOUSE_HOST}:${env.CLICKHOUSE_PORT}`,
+  url: `${chProtocol}://${env.CLICKHOUSE_HOST}:${env.CLICKHOUSE_PORT}`,
   username: env.CLICKHOUSE_USER,
   password: env.CLICKHOUSE_PASSWORD,
   clickhouse_settings: {
     output_format_json_quote_64bit_integers: 0,
+    date_time_input_format: 'best_effort',
   },
 })
 

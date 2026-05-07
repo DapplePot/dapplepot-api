@@ -39,7 +39,7 @@ CREATE TABLE IF NOT EXISTS obs_events (
 ENGINE = ReplacingMergeTree()
 ORDER BY   (tenant_id, toStartOfHour(emitted_at), session_id, sequence_index)
 PARTITION BY (tenant_id, toYYYYMM(emitted_at))
-TTL        emitted_at + INTERVAL 90 DAY
+TTL        toDateTime(emitted_at) + INTERVAL 90 DAY
 SETTINGS   index_granularity = 8192, merge_with_ttl_timeout = 3600;
 
 ALTER TABLE obs_events ADD INDEX IF NOT EXISTS idx_session_bloom session_id TYPE bloom_filter(0.01) GRANULARITY 4;

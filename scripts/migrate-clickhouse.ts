@@ -6,8 +6,11 @@ import { createClient } from '@clickhouse/client'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 
+const chPort = Number(process.env.CLICKHOUSE_PORT ?? 8443)
+const chProtocol = chPort === 8443 ? 'https' : 'http'
+
 const clickhouse = createClient({
-  url: `https://${process.env.CLICKHOUSE_HOST}:${process.env.CLICKHOUSE_PORT ?? 8443}`,
+  url: `${chProtocol}://${process.env.CLICKHOUSE_HOST}:${chPort}`,
   username: process.env.CLICKHOUSE_USER ?? 'dapplepot',
   password: process.env.CLICKHOUSE_PASSWORD ?? 'dapplepot',
 })

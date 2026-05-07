@@ -96,7 +96,7 @@ export async function getTracePage(
     WHERE tenant_id      = {tenantId: String}
       AND session_id     = {sessionId: UUID}
       AND sequence_index > {afterSeq: Int32}
-    ORDER BY sequence_index ASC
+    ORDER BY emitted_at ASC, sequence_index ASC
     LIMIT {limit: UInt32}`,
     { tenantId, sessionId, afterSeq, limit: fetchLimit + 1 }
   )
