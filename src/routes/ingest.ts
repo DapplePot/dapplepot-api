@@ -74,13 +74,7 @@ ingestRouter.post('/events', sdkKeyAuth, async (c) => {
     return c.json({ error: { code: 'PAYLOAD_TOO_LARGE', message: `Batch exceeds ${MAX_BATCH} events` } }, 413)
   }
 
-  // Batch-level idempotency via Redis
   const batchId = String(body.batch_id ?? randomUUID())
-  const dedupKey = `dp:batch:${batchId}`
-  const isNew = await redis.set(dedupKey, '1', 'EX', BATCH_DEDUP_TTL, 'NX')
-  if (!isNew) {
-    return c.json({ accepted: rawEvents.length, rejected: 0 }, 202)
-  }
 
   // Normalize events
   const events: NormalizedEvent[] = []
@@ -100,11 +94,20 @@ ingestRouter.post('/events', sdkKeyAuth, async (c) => {
 })
 
 async function processEvents(events: NormalizedEvent[], batchId: string): Promise<void> {
-  // ClickHouse append — bulk insert for the whole batch
+  // Batch-level idempotency — checked here so a ClickHouse failure can release the
+  // key and allow the SDK to retry, rather than permanently deduping a failed batch.
+  const dedupKey = `dp:batch:${batchId}`
+  const isNew = await redis.set(dedupKey, '1', 'EX', BATCH_DEDUP_TTL, 'NX')
+  if (!isNew) return
+
+  // ClickHouse append — bulk insert for the whole batch.
+  // On failure: release the dedup key so the SDK can retry the same batch_id.
   try {
     await appendEvents(events, batchId)
   } catch (err) {
-    console.error('[ingest] event-appender failed:', (err as Error).message)
+    console.error('[ingest] event-appender failed, releasing dedup key for retry:', (err as Error).message)
+    await redis.del(dedupKey)
+    return
   }
 
   // Session upsert — sequential to preserve state machine ordering within a session

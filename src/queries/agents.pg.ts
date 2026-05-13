@@ -44,6 +44,11 @@ export async function listAgents(tenantId: string): Promise<AgentSummary[]> {
     return rows.map(mapAgent)
 }
 
+// Bayesian prior: Beta(α=2, β=8) → starting trust = 100 × (1 − 2/10) = 80
+const _TRUST_PRIOR_SCORE = 80.0
+const _TRUST_PRIOR_ALPHA = 2.0
+const _TRUST_PRIOR_BETA  = 8.0
+
 export async function createAgent(params: {
     tenantId: string
     name: string
@@ -56,5 +61,23 @@ export async function createAgent(params: {
         [params.tenantId, params.name, params.latestVersion]
     )
     if (!row) throw new Error('Failed to create agent')
+
+    // Seed agent_risk_scores with the Bayesian prior so the trust card shows
+    // immediately on the profile page — before any session has been scored.
+    // ON CONFLICT DO NOTHING: if the scorer has already written a row, leave it.
+    await queryRow(
+        `INSERT INTO agent_risk_scores
+             (agent_id, tenant_id, session_count,
+              avg_llm_score, avg_asi_score,
+              max_llm_score, max_asi_score,
+              trust_score, trust_trend, trust_trend_slope,
+              trust_alpha, trust_beta,
+              last_scored_at)
+         VALUES ($1, $2, 0, 0, 0, 0, 0, $3, 'stable', 0, $4, $5, now())
+         ON CONFLICT (agent_id) DO NOTHING`,
+        [row.agent_id, params.tenantId,
+         _TRUST_PRIOR_SCORE, _TRUST_PRIOR_ALPHA, _TRUST_PRIOR_BETA]
+    )
+
     return mapAgent(row)
 }

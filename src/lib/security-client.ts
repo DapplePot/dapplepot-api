@@ -34,7 +34,7 @@ export async function forwardToSecurity(event: NormalizedEvent): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body,
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(3000),
     })
     if (!res.ok) {
       console.error('[security-client] evaluate returned %d for session %s', res.status, event.sessionId)

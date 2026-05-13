@@ -293,11 +293,11 @@ export async function getAgentProfile(
     ),
     queryRows<any>(
       `SELECT session_id, llm_score, llm_band,
-              asi_score, asi_band, scored_at
+              asi_score, asi_band, trust_score, scored_at
        FROM session_risk_scores
        WHERE agent_id = $1 AND tenant_id = $2
        ORDER BY scored_at DESC
-       LIMIT 10`,
+       LIMIT 20`,
       [agentId, tenantId],
     ),
   ])
@@ -311,12 +311,13 @@ export async function getAgentProfile(
   }))
 
   const recentSessions: AgentRecentSession[] = sessionRows.map(r => ({
-    sessionId: r.session_id,
-    llmScore:  r.llm_score,
-    llmBand:   r.llm_band,
-    asiScore:  r.asi_score ?? 0,
-    asiBand:   r.asi_band  ?? 'clean',
-    scoredAt:  new Date(r.scored_at).toISOString(),
+    sessionId:  r.session_id,
+    llmScore:   r.llm_score,
+    llmBand:    r.llm_band,
+    asiScore:   r.asi_score  ?? 0,
+    asiBand:    r.asi_band   ?? 'clean',
+    trustScore: r.trust_score != null ? Number(r.trust_score) : null,
+    scoredAt:   new Date(r.scored_at).toISOString(),
   }))
 
   return {

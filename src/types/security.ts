@@ -139,12 +139,13 @@ export interface AgentSignalBreakdown {
 }
 
 export interface AgentRecentSession {
-  sessionId: string
-  llmScore:  number
-  llmBand:   RiskBand
-  asiScore:  number
-  asiBand:   RiskBand
-  scoredAt:  string
+  sessionId:  string
+  llmScore:   number
+  llmBand:    RiskBand
+  asiScore:   number
+  asiBand:    RiskBand
+  trustScore: number | null
+  scoredAt:   string
 }
 
 export interface AgentProfile {
