@@ -176,10 +176,10 @@ export interface NormalizedEvent {
   runId: string
   tenantId: string
   agentId: string
-  agentVersion?: string
-  environment?: string
-  deploymentId?: string
-  userContextId?: string
+  agentVersion?: string | undefined
+  environment?: string | undefined
+  deploymentId?: string | undefined
+  userContextId?: string | undefined
   sdkEventType: string   // original SDK type (session_start, node_start, …)
   emittedAt: string      // ISO string
   sequenceIndex: number
