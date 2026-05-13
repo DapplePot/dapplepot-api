@@ -37,6 +37,7 @@ const TRANSITIONS = new Map<string, string>([
   ['open|graph_end',   'finalised'],
   ['open|graph_error', 'terminated'],
   ['stub|graph_end',   'finalised'],  // session_end wins the race before session_start arrives
+  ['stub|graph_error', 'terminated'], // session_error wins the race before session_start arrives
 ])
 
 const TERMINAL = new Set(['terminated', 'finalised'])

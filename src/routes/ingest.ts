@@ -87,36 +87,39 @@ ingestRouter.post('/events', sdkKeyAuth, async (c) => {
     return c.json({ accepted: 0, rejected: rawEvents.length }, 202)
   }
 
-  // Fire-and-forget: fan out to all three destinations without blocking the response
-  void processEvents(events, batchId)
+  // Batch-level idempotency — dedup key is set before the ClickHouse write and
+  // released on failure so the SDK can retry the same batch_id.
+  const dedupKey = `dp:batch:${batchId}`
+  const isNew = await redis.set(dedupKey, '1', 'EX', BATCH_DEDUP_TTL, 'NX')
+
+  if (isNew) {
+    // ClickHouse append is awaited before returning so the SDK only sees 202 after
+    // events are durably stored. On failure we return 500, which triggers the SDK's
+    // built-in retry, and we release the dedup key so the retry is accepted.
+    try {
+      await appendEvents(events, batchId)
+    } catch (err) {
+      console.error('[ingest] event-appender failed, releasing dedup key for retry:', (err as Error).message)
+      await redis.del(dedupKey)
+      return c.json({ error: { code: 'INTERNAL_ERROR', message: 'Event storage temporarily unavailable' } }, 500)
+    }
+
+    // Session upsert + security are fire-and-forget — they don't affect event
+    // durability and must not delay the 202 response.
+    void postProcessEvents(events)
+  }
 
   return c.json({ accepted: events.length, rejected: rawEvents.length - events.length }, 202)
 })
 
-async function processEvents(events: NormalizedEvent[], batchId: string): Promise<void> {
-  // Batch-level idempotency — checked here so a ClickHouse failure can release the
-  // key and allow the SDK to retry, rather than permanently deduping a failed batch.
-  const dedupKey = `dp:batch:${batchId}`
-  const isNew = await redis.set(dedupKey, '1', 'EX', BATCH_DEDUP_TTL, 'NX')
-  if (!isNew) return
-
-  // ClickHouse append — bulk insert for the whole batch.
-  // On failure: release the dedup key so the SDK can retry the same batch_id.
-  try {
-    await appendEvents(events, batchId)
-  } catch (err) {
-    console.error('[ingest] event-appender failed, releasing dedup key for retry:', (err as Error).message)
-    await redis.del(dedupKey)
-    return
-  }
-
-  // Session upsert — sequential to preserve state machine ordering within a session
+async function postProcessEvents(events: NormalizedEvent[]): Promise<void> {
+  // Sequential to preserve state machine ordering within a session
   for (const event of events) {
     await upsertEvent(event).catch(e =>
       console.error('[ingest] session-writer failed event %s:', event.eventId, (e as Error).message)
     )
   }
 
-  // Security forward — fire in parallel, independent of session state
+  // Independent of session state
   await Promise.allSettled(events.map(e => forwardToSecurity(e)))
 }
