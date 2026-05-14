@@ -372,6 +372,16 @@ export interface AgentAlertConfig {
   signal_thresholds:           Record<string, number>
   tool_manifest:               string[]        // [] = not configured
   max_tool_calls_per_session:  number | null   // null = not configured
+  // Agent profile fields (null = auto/heuristic)
+  system_prompt:      string | null
+  environment:        'production' | 'staging' | null
+  irreversible_tools: string[] | null
+  network_allowlist:  string[] | null
+  working_directory:  string | null
+  write_namespace:    string | null
+  operating_hours:    { days: string[]; from: string; to: string } | null
+  sbom_allowlist:     string[] | null
+  mcp_endpoints:      string[] | null
 }
 
 export async function getAgentAlertConfig(
@@ -385,13 +395,31 @@ export async function getAgentAlertConfig(
     signal_thresholds:           Record<string, number>
     tool_manifest:               string[]
     max_tool_calls_per_session:  number | null
+    system_prompt:               string | null
+    environment:                 string | null
+    irreversible_tools:          unknown
+    network_allowlist:           unknown
+    working_directory:           string | null
+    write_namespace:             string | null
+    operating_hours:             unknown
+    sbom_allowlist:              unknown
+    mcp_endpoints:               unknown
   }>(
     `SELECT composite_threshold,
             llm_composite_threshold,
             asi_composite_threshold,
             signal_thresholds,
             tool_manifest,
-            max_tool_calls_per_session
+            max_tool_calls_per_session,
+            system_prompt,
+            environment,
+            irreversible_tools,
+            network_allowlist,
+            working_directory,
+            write_namespace,
+            operating_hours,
+            sbom_allowlist,
+            mcp_endpoints
      FROM agent_alert_config
      WHERE tenant_id = $1 AND agent_id = $2`,
     [tenantId, agentId],
@@ -411,6 +439,15 @@ export async function getAgentAlertConfig(
     signal_thresholds:          parseJsonb<Record<string, number>>(row?.signal_thresholds, {}),
     tool_manifest:              parseJsonb<string[]>(row?.tool_manifest, []),
     max_tool_calls_per_session: row?.max_tool_calls_per_session ?? null,
+    system_prompt:      row?.system_prompt      ?? null,
+    environment:        (row?.environment as 'production' | 'staging' | null) ?? null,
+    irreversible_tools: parseJsonb<string[] | null>(row?.irreversible_tools, null),
+    network_allowlist:  parseJsonb<string[] | null>(row?.network_allowlist, null),
+    working_directory:  row?.working_directory  ?? null,
+    write_namespace:    row?.write_namespace    ?? null,
+    operating_hours:    parseJsonb<{ days: string[]; from: string; to: string } | null>(row?.operating_hours, null),
+    sbom_allowlist:     parseJsonb<string[] | null>(row?.sbom_allowlist, null),
+    mcp_endpoints:      parseJsonb<string[] | null>(row?.mcp_endpoints, null),
   }
 }
 
@@ -425,10 +462,21 @@ export async function upsertAgentAlertConfig(
     signal_threshold?:            number | null  // null = remove override
     tool_manifest?:               string[]
     max_tool_calls_per_session?:  number | null  // null = remove override
+    system_prompt?:               string | null
+    environment?:                 'production' | 'staging' | null
+    irreversible_tools?:          string[] | null
+    network_allowlist?:           string[] | null
+    working_directory?:           string | null
+    write_namespace?:             string | null
+    operating_hours?:             { days: string[]; from: string; to: string } | null
+    sbom_allowlist?:              string[] | null
+    mcp_endpoints?:               string[] | null
   }
 ): Promise<void> {
   const { composite_threshold, llm_composite_threshold, asi_composite_threshold,
-          signal_id, signal_threshold, tool_manifest, max_tool_calls_per_session } = opts
+          signal_id, signal_threshold, tool_manifest, max_tool_calls_per_session,
+          system_prompt, environment, irreversible_tools, network_allowlist,
+          working_directory, write_namespace, operating_hours, sbom_allowlist, mcp_endpoints } = opts
 
   if (composite_threshold !== undefined) {
     await queryRow(
@@ -507,6 +555,105 @@ export async function upsertAgentAlertConfig(
          max_tool_calls_per_session = EXCLUDED.max_tool_calls_per_session,
          updated_at                 = now()`,
       [tenantId, agentId, max_tool_calls_per_session],
+    )
+  }
+
+  if (system_prompt !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, system_prompt, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         system_prompt = EXCLUDED.system_prompt,
+         updated_at    = now()`,
+      [tenantId, agentId, system_prompt],
+    )
+  }
+
+  if (environment !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, environment, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         environment = EXCLUDED.environment,
+         updated_at  = now()`,
+      [tenantId, agentId, environment],
+    )
+  }
+
+  if (irreversible_tools !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, irreversible_tools, updated_at)
+       VALUES ($1, $2, $3::jsonb, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         irreversible_tools = EXCLUDED.irreversible_tools,
+         updated_at         = now()`,
+      [tenantId, agentId, irreversible_tools !== null ? JSON.stringify(irreversible_tools) : null],
+    )
+  }
+
+  if (network_allowlist !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, network_allowlist, updated_at)
+       VALUES ($1, $2, $3::jsonb, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         network_allowlist = EXCLUDED.network_allowlist,
+         updated_at        = now()`,
+      [tenantId, agentId, network_allowlist !== null ? JSON.stringify(network_allowlist) : null],
+    )
+  }
+
+  if (working_directory !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, working_directory, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         working_directory = EXCLUDED.working_directory,
+         updated_at        = now()`,
+      [tenantId, agentId, working_directory],
+    )
+  }
+
+  if (write_namespace !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, write_namespace, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         write_namespace = EXCLUDED.write_namespace,
+         updated_at      = now()`,
+      [tenantId, agentId, write_namespace],
+    )
+  }
+
+  if (operating_hours !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, operating_hours, updated_at)
+       VALUES ($1, $2, $3::jsonb, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         operating_hours = EXCLUDED.operating_hours,
+         updated_at      = now()`,
+      [tenantId, agentId, operating_hours !== null ? JSON.stringify(operating_hours) : null],
+    )
+  }
+
+  if (sbom_allowlist !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, sbom_allowlist, updated_at)
+       VALUES ($1, $2, $3::jsonb, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         sbom_allowlist = EXCLUDED.sbom_allowlist,
+         updated_at     = now()`,
+      [tenantId, agentId, sbom_allowlist !== null ? JSON.stringify(sbom_allowlist) : null],
+    )
+  }
+
+  if (mcp_endpoints !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, mcp_endpoints, updated_at)
+       VALUES ($1, $2, $3::jsonb, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         mcp_endpoints = EXCLUDED.mcp_endpoints,
+         updated_at    = now()`,
+      [tenantId, agentId, mcp_endpoints !== null ? JSON.stringify(mcp_endpoints) : null],
     )
   }
 }

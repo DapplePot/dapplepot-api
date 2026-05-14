@@ -220,6 +220,15 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
     threshold?:                   number | null
     tool_manifest?:               string[]
     max_tool_calls_per_session?:  number | null
+    system_prompt?:               string | null
+    environment?:                 'production' | 'staging' | null
+    irreversible_tools?:          string[] | null
+    network_allowlist?:           string[] | null
+    working_directory?:           string | null
+    write_namespace?:             string | null
+    operating_hours?:             { days: string[]; from: string; to: string } | null
+    sbom_allowlist?:              string[] | null
+    mcp_endpoints?:               string[] | null
   }
   try {
     body = await c.req.json()
@@ -228,16 +237,30 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
   }
 
   const { composite_threshold, llm_composite_threshold, asi_composite_threshold,
-          signal_id, threshold, tool_manifest, max_tool_calls_per_session } = body
+          signal_id, threshold, tool_manifest, max_tool_calls_per_session,
+          system_prompt, environment, irreversible_tools, network_allowlist,
+          working_directory, write_namespace, operating_hours, sbom_allowlist, mcp_endpoints } = body
 
-  const isComposite    = composite_threshold !== undefined
-  const isLlm          = llm_composite_threshold !== undefined
-  const isAsi          = asi_composite_threshold !== undefined
-  const isSignal       = signal_id !== undefined
-  const isManifest     = tool_manifest !== undefined
-  const isMaxToolCalls = max_tool_calls_per_session !== undefined
+  const isComposite        = composite_threshold !== undefined
+  const isLlm              = llm_composite_threshold !== undefined
+  const isAsi              = asi_composite_threshold !== undefined
+  const isSignal           = signal_id !== undefined
+  const isManifest         = tool_manifest !== undefined
+  const isMaxToolCalls     = max_tool_calls_per_session !== undefined
+  const isSystemPrompt     = system_prompt !== undefined
+  const isEnvironment      = environment !== undefined
+  const isIrreversible     = irreversible_tools !== undefined
+  const isNetworkAllowlist = network_allowlist !== undefined
+  const isWorkingDir       = working_directory !== undefined
+  const isWriteNamespace   = write_namespace !== undefined
+  const isOperatingHours   = operating_hours !== undefined
+  const isSbomAllowlist    = sbom_allowlist !== undefined
+  const isMcpEndpoints     = mcp_endpoints !== undefined
 
-  if (!isComposite && !isLlm && !isAsi && !isSignal && !isManifest && !isMaxToolCalls) {
+  if (!isComposite && !isLlm && !isAsi && !isSignal && !isManifest && !isMaxToolCalls
+      && !isSystemPrompt && !isEnvironment && !isIrreversible && !isNetworkAllowlist
+      && !isWorkingDir && !isWriteNamespace && !isOperatingHours && !isSbomAllowlist
+      && !isMcpEndpoints) {
     return c.json({ error: 'Provide at least one field to update' }, 400)
   }
 
@@ -274,14 +297,62 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
       return c.json({ error: 'max_tool_calls_per_session must be a positive integer or null' }, 400)
     }
   }
+  if (isSystemPrompt && system_prompt !== null && typeof system_prompt !== 'string') {
+    return c.json({ error: 'system_prompt must be a string or null' }, 400)
+  }
+  if (isEnvironment && environment !== null && environment !== 'production' && environment !== 'staging') {
+    return c.json({ error: "environment must be 'production', 'staging', or null" }, 400)
+  }
+  if (isIrreversible && irreversible_tools !== null) {
+    if (!Array.isArray(irreversible_tools) || irreversible_tools.some(t => typeof t !== 'string')) {
+      return c.json({ error: 'irreversible_tools must be an array of strings or null' }, 400)
+    }
+  }
+  if (isNetworkAllowlist && network_allowlist !== null) {
+    if (!Array.isArray(network_allowlist) || network_allowlist.some(t => typeof t !== 'string')) {
+      return c.json({ error: 'network_allowlist must be an array of strings or null' }, 400)
+    }
+  }
+  if (isWorkingDir && working_directory !== null && typeof working_directory !== 'string') {
+    return c.json({ error: 'working_directory must be a string or null' }, 400)
+  }
+  if (isWriteNamespace && write_namespace !== null && typeof write_namespace !== 'string') {
+    return c.json({ error: 'write_namespace must be a string or null' }, 400)
+  }
+  if (isOperatingHours && operating_hours !== null) {
+    if (typeof operating_hours !== 'object' || Array.isArray(operating_hours)
+        || typeof operating_hours.from !== 'string' || typeof operating_hours.to !== 'string'
+        || !Array.isArray(operating_hours.days)) {
+      return c.json({ error: 'operating_hours must be { days: string[], from: string, to: string } or null' }, 400)
+    }
+  }
+  if (isSbomAllowlist && sbom_allowlist !== null) {
+    if (!Array.isArray(sbom_allowlist) || sbom_allowlist.some(t => typeof t !== 'string')) {
+      return c.json({ error: 'sbom_allowlist must be an array of strings or null' }, 400)
+    }
+  }
+  if (isMcpEndpoints && mcp_endpoints !== null) {
+    if (!Array.isArray(mcp_endpoints) || mcp_endpoints.some(t => typeof t !== 'string')) {
+      return c.json({ error: 'mcp_endpoints must be an array of strings or null' }, 400)
+    }
+  }
 
   await upsertAgentAlertConfig(tenantId, agentId, {
-    ...(isComposite    ? { composite_threshold }                         : {}),
-    ...(isLlm          ? { llm_composite_threshold }                     : {}),
-    ...(isAsi          ? { asi_composite_threshold }                     : {}),
-    ...(isSignal       ? { signal_id, signal_threshold: threshold ?? null } : {}),
-    ...(isManifest     ? { tool_manifest }                               : {}),
-    ...(isMaxToolCalls ? { max_tool_calls_per_session }                  : {}),
+    ...(isComposite        ? { composite_threshold }                            : {}),
+    ...(isLlm              ? { llm_composite_threshold }                        : {}),
+    ...(isAsi              ? { asi_composite_threshold }                        : {}),
+    ...(isSignal           ? { signal_id, signal_threshold: threshold ?? null } : {}),
+    ...(isManifest         ? { tool_manifest }                                  : {}),
+    ...(isMaxToolCalls     ? { max_tool_calls_per_session }                     : {}),
+    ...(isSystemPrompt     ? { system_prompt }                                  : {}),
+    ...(isEnvironment      ? { environment }                                    : {}),
+    ...(isIrreversible     ? { irreversible_tools }                             : {}),
+    ...(isNetworkAllowlist ? { network_allowlist }                              : {}),
+    ...(isWorkingDir       ? { working_directory }                              : {}),
+    ...(isWriteNamespace   ? { write_namespace }                                : {}),
+    ...(isOperatingHours   ? { operating_hours }                                : {}),
+    ...(isSbomAllowlist    ? { sbom_allowlist }                                 : {}),
+    ...(isMcpEndpoints     ? { mcp_endpoints }                                  : {}),
   })
 
   // Invalidate per-agent Redis config cache so the scorer picks up the change
