@@ -46,12 +46,24 @@ export interface CostPoint {
   estimatedCostUsd: number
 }
 
+export interface TrendPoint {
+  hour: string
+  sessionCount: number
+  tokenCount: number
+  avgLatencyMs: number
+}
+
+export interface AgentSessionCount {
+  agentId: string
+  agentName: string | null
+  sessionCount: number
+}
+
 export interface SessionFunnel {
   window: string
   totalStarted: number
-  reachedOpen: number
-  reachedTerminal: number
-  completed: number
-  errored: number
+  open: number
+  finalised: number
+  terminated: number
   completionRate: number
 }

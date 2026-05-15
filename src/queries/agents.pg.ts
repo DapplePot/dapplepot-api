@@ -1,4 +1,5 @@
 import { queryRows, queryRow } from '../lib/postgres.js'
+import type { LlmModel } from './llm-models.pg.js'
 
 interface AgentRow extends Record<string, unknown> {
     agent_id: string
@@ -80,4 +81,54 @@ export async function createAgent(params: {
     )
 
     return mapAgent(row)
+}
+
+export async function getAgentLlmModels(tenantId: string, agentId: string): Promise<LlmModel[]> {
+  const rows = await queryRows<{
+    model_id: string; tenant_id: string; name: string; provider: string | null
+    context_window_tokens: number | null
+    input_cost_per_1k: string | null; output_cost_per_1k: string | null
+    created_at: Date; updated_at: Date
+  }>(
+    `SELECT m.model_id, m.tenant_id, m.name, m.provider,
+            m.context_window_tokens, m.input_cost_per_1k, m.output_cost_per_1k,
+            m.created_at, m.updated_at
+     FROM agent_llm_models alm
+     JOIN llm_models m ON m.model_id = alm.model_id
+     WHERE alm.tenant_id = $1::uuid AND alm.agent_id = $2::uuid
+     ORDER BY m.name ASC`,
+    [tenantId, agentId]
+  )
+  return rows.map(r => ({
+    modelId:             r.model_id,
+    tenantId:            r.tenant_id,
+    name:                r.name,
+    provider:            r.provider,
+    contextWindowTokens: r.context_window_tokens,
+    inputCostPer1k:      r.input_cost_per_1k  != null ? Number(r.input_cost_per_1k)  : null,
+    outputCostPer1k:     r.output_cost_per_1k != null ? Number(r.output_cost_per_1k) : null,
+    createdAt:           r.created_at.toISOString(),
+    updatedAt:           r.updated_at.toISOString(),
+  }))
+}
+
+export async function setAgentLlmModels(
+  tenantId: string,
+  agentId: string,
+  modelIds: string[]
+): Promise<void> {
+  // Delete all existing mappings then re-insert — simple replace semantics
+  await queryRow(
+    `DELETE FROM agent_llm_models WHERE tenant_id = $1::uuid AND agent_id = $2::uuid`,
+    [tenantId, agentId]
+  )
+  if (modelIds.length === 0) return
+  for (const modelId of modelIds) {
+    await queryRow(
+      `INSERT INTO agent_llm_models (agent_id, model_id, tenant_id)
+       VALUES ($1::uuid, $2::uuid, $3::uuid)
+       ON CONFLICT DO NOTHING`,
+      [agentId, modelId, tenantId]
+    )
+  }
 }

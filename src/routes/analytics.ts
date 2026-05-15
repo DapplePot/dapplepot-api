@@ -9,7 +9,10 @@ import {
   getLatency,
   getCost,
   getSessionFunnelPg,
+  getAgentSessionCounts,
+  getTrends,
   windowToInterval,
+  windowToHours,
 } from '../queries/analytics.ch.js'
 import { env } from '../env.js'
 
@@ -88,6 +91,21 @@ analyticsRouter.get('/cost', async (c) => {
   return c.json(data)
 })
 
+analyticsRouter.get('/trends', async (c) => {
+  const tenantId = c.get('tenantId')
+  const window   = c.req.query('window') ?? '24h'
+  const data     = await getTrends(tenantId, windowToHours(window))
+  return c.json(data)
+})
+
+analyticsRouter.get('/agents/sessions', async (c) => {
+  const tenantId = c.get('tenantId')
+  const window   = c.req.query('window') ?? '7d'
+  const interval = windowToInterval(window)
+  const data     = await getAgentSessionCounts(tenantId, interval)
+  return c.json(data)
+})
+
 analyticsRouter.get('/sessions/funnel', async (c) => {
   const tenantId = c.get('tenantId')
   const window = c.req.query('window') ?? '7d'
@@ -95,7 +113,7 @@ analyticsRouter.get('/sessions/funnel', async (c) => {
 
   const counts = await getSessionFunnelPg(tenantId, interval)
   const completionRate =
-    counts.totalStarted > 0 ? counts.completed / counts.totalStarted : 0
+    counts.totalStarted > 0 ? counts.finalised / counts.totalStarted : 0
 
   return c.json({ window, ...counts, completionRate })
 })

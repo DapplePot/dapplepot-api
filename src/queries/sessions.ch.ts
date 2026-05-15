@@ -6,6 +6,13 @@ interface TokenTotals extends Record<string, unknown> {
   tok_out: number
 }
 
+export interface ModelTokenRow extends Record<string, unknown> {
+  llm_model:    string
+  input_tokens: number
+  output_tokens: number
+  call_count:   number
+}
+
 interface EventStats extends Record<string, unknown> {
   node_count: number
   error_count: number
@@ -27,6 +34,27 @@ export async function getSessionTokens(
     FINAL
     WHERE tenant_id  = {tenantId: String}
       AND session_id = {sessionId: UUID}`,
+    { tenantId, sessionId }
+  )
+}
+
+export async function getSessionTokensByModel(
+  tenantId: string,
+  sessionId: string
+): Promise<ModelTokenRow[]> {
+  return chQuery<ModelTokenRow>(
+    `SELECT
+       llm_model,
+       sum(llm_input_tokens)  AS input_tokens,
+       sum(llm_output_tokens) AS output_tokens,
+       count()                AS call_count
+     FROM obs_events
+     WHERE tenant_id  = {tenantId: String}
+       AND session_id = {sessionId: UUID}
+       AND event_type = 'llm_end'
+       AND llm_model  != ''
+     GROUP BY llm_model
+     ORDER BY (input_tokens + output_tokens) DESC`,
     { tenantId, sessionId }
   )
 }

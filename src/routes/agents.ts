@@ -2,7 +2,8 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { jwtAuth } from '../middleware/auth.js'
 import { requireRole } from '../middleware/authorize.js'
-import { listAgents, createAgent } from '../queries/agents.pg.js'
+import { listAgents, createAgent, getAgentLlmModels, setAgentLlmModels } from '../queries/agents.pg.js'
+import { redis } from '../lib/redis.js'
 
 export const agentsRouter = new Hono()
 
@@ -49,4 +50,31 @@ agentsRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
         }
         return c.json({ error: 'Internal server error' }, 500)
     }
+})
+
+// GET /v1/agents/:id/llm-models — viewer+
+agentsRouter.get('/:id/llm-models', jwtAuth, requireRole('viewer'), async (c) => {
+    const tenantId = c.get('tenantId')
+    const agentId  = c.req.param('id')
+    const models   = await getAgentLlmModels(tenantId, agentId)
+    return c.json(models)
+})
+
+// PUT /v1/agents/:id/llm-models — admin only
+agentsRouter.put('/:id/llm-models', jwtAuth, requireRole('admin'), async (c) => {
+    const tenantId = c.get('tenantId')
+    const agentId  = c.req.param('id')
+    const body     = await c.req.json().catch(() => ({}))
+
+    const parsed = z.object({ modelIds: z.array(z.string().uuid()) }).safeParse(body)
+    if (!parsed.success) {
+        return c.json({ error: { code: 'VALIDATION_ERROR', message: parsed.error.message } }, 400)
+    }
+
+    await setAgentLlmModels(tenantId, agentId, parsed.data.modelIds)
+    // Invalidate the security scorer's Redis cache so EA-04a and UBC-01b
+    // see the updated connected_llms list on the very next session.
+    await redis.del(`dp:sec:${tenantId}:agent:${agentId}:cfg`)
+    const models = await getAgentLlmModels(tenantId, agentId)
+    return c.json(models)
 })

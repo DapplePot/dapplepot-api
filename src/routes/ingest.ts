@@ -41,7 +41,7 @@ function normalize(
     eventId: String(raw.event_id ?? randomUUID()),
     sessionId,
     runId: String(raw.run_id ?? randomUUID()),
-    tenantId: String(raw.dp_tenant_id ?? raw.tenant_id ?? tenantId),
+    tenantId,
     agentId,
     agentVersion: raw.agent_version as string | undefined,
     environment: raw.environment as string | undefined,

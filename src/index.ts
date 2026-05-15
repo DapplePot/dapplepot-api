@@ -3,12 +3,14 @@ import { env } from './env.js'
 import { closePostgres } from './lib/postgres.js'
 import { closeClickHouse } from './lib/clickhouse.js'
 import { closeRedis } from './lib/redis.js'
+import { startMonthlySealJob } from './lib/monthly-seal-job.js'
 import app from './app.js'
 
 serve(
   { fetch: app.fetch, port: env.PORT ?? env.API_PORT, hostname: env.API_HOST },
   (info) => {
     console.log(`dapplepot-api listening on http://${info.address}:${info.port}`)
+    startMonthlySealJob()
   }
 )
 

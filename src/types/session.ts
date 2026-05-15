@@ -45,6 +45,12 @@ export interface SessionDetail {
     totalInputTokens: number
     totalOutputTokens: number
     llmCallCount: number
+    byModel: {
+      model:        string
+      inputTokens:  number
+      outputTokens: number
+      callCount:    number
+    }[]
   }
   executionSummary: {
     nodeCount: number

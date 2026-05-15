@@ -5,8 +5,10 @@ import type {
   ErrorRatePoint,
   LatencyStat,
   CostPoint,
+  AgentSessionCount,
+  TrendPoint,
 } from '../types/analytics.js'
-import { queryRow } from '../lib/postgres.js'
+import { queryRow, queryRows } from '../lib/postgres.js'
 
 export function windowToHours(window: string): number {
   const map: Record<string, number> = { '1h': 1, '24h': 24, '7d': 168, '30d': 720 }
@@ -226,17 +228,15 @@ export async function getSessionFunnelPg(
 ): Promise<Omit<SessionFunnel, 'window' | 'completionRate'>> {
   const row = await queryRow<{
     total_started: number
-    reached_open: number
-    reached_terminal: number
-    completed: number
-    errored: number
+    open: number
+    finalised: number
+    terminated: number
   }>(
     `SELECT
-      COUNT(*)                                                                    AS total_started,
-      COUNT(*) FILTER (WHERE status != 'stub')                                   AS reached_open,
-      COUNT(*) FILTER (WHERE status IN ('finalised','terminated','error'))        AS reached_terminal,
-      COUNT(*) FILTER (WHERE status = 'finalised')                               AS completed,
-      COUNT(*) FILTER (WHERE status = 'error')                                   AS errored
+      COUNT(*)                                          AS total_started,
+      COUNT(*) FILTER (WHERE status = 'open')           AS open,
+      COUNT(*) FILTER (WHERE status = 'finalised')      AS finalised,
+      COUNT(*) FILTER (WHERE status = 'terminated')     AS terminated
     FROM sessions
     WHERE tenant_id  = $1
       AND started_at >= NOW() - $2::interval`,
@@ -245,9 +245,56 @@ export async function getSessionFunnelPg(
 
   return {
     totalStarted: Number(row?.total_started ?? 0),
-    reachedOpen: Number(row?.reached_open ?? 0),
-    reachedTerminal: Number(row?.reached_terminal ?? 0),
-    completed: Number(row?.completed ?? 0),
-    errored: Number(row?.errored ?? 0),
+    open:         Number(row?.open          ?? 0),
+    finalised:    Number(row?.finalised     ?? 0),
+    terminated:   Number(row?.terminated    ?? 0),
   }
+}
+
+export async function getAgentSessionCounts(
+  tenantId: string,
+  interval: string
+): Promise<AgentSessionCount[]> {
+  const rows = await queryRows<{ agent_id: string; agent_name: string | null; session_count: number }>(
+    `SELECT s.agent_id, a.name AS agent_name, COUNT(*) AS session_count
+     FROM sessions s
+     LEFT JOIN agents a ON a.agent_id = s.agent_id
+     WHERE s.tenant_id = $1 AND s.started_at >= NOW() - $2::interval
+     GROUP BY s.agent_id, a.name
+     ORDER BY session_count DESC`,
+    [tenantId, interval],
+  )
+  return (rows ?? []).map(r => ({
+    agentId:      r.agent_id,
+    agentName:    r.agent_name,
+    sessionCount: Number(r.session_count),
+  }))
+}
+
+export async function getTrends(tenantId: string, hours: number): Promise<TrendPoint[]> {
+  const rows = await chQuery<{
+    hour: string
+    session_count: number
+    token_count: number
+    avg_latency_ms: number
+  }>(
+    `SELECT
+      toStartOfHour(hour)              AS hour,
+      countMerge(call_count)           AS session_count,
+      sumMerge(input_tokens_sum) + sumMerge(output_tokens_sum) AS token_count,
+      avgMerge(latency_avg)            AS avg_latency_ms
+    FROM obs_llm_hourly
+    FINAL
+    WHERE tenant_id = {tenantId: String}
+      AND hour >= toStartOfHour(now() - INTERVAL {hours: UInt32} HOUR)
+    GROUP BY hour
+    ORDER BY hour ASC`,
+    { tenantId, hours },
+  )
+  return rows.map(r => ({
+    hour:          r.hour,
+    sessionCount:  Number(r.session_count),
+    tokenCount:    Number(r.token_count),
+    avgLatencyMs:  Number(r.avg_latency_ms),
+  }))
 }

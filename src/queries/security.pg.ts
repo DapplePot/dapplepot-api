@@ -288,8 +288,8 @@ export async function getAgentProfile(
       `SELECT owasp_signal_id, framework,
               fired_count, sessions_affected, last_seen_at
        FROM v_agent_signal_breakdown
-       WHERE agent_id = $1`,
-      [agentId],
+       WHERE agent_id = $1 AND tenant_id = $2`,
+      [agentId, tenantId],
     ),
     queryRows<any>(
       `SELECT session_id, llm_score, llm_band,
@@ -312,9 +312,9 @@ export async function getAgentProfile(
 
   const recentSessions: AgentRecentSession[] = sessionRows.map(r => ({
     sessionId:  r.session_id,
-    llmScore:   r.llm_score,
+    llmScore:   Number(r.llm_score  ?? 0),
     llmBand:    r.llm_band,
-    asiScore:   r.asi_score  ?? 0,
+    asiScore:   Number(r.asi_score  ?? 0),
     asiBand:    r.asi_band   ?? 'clean',
     trustScore: r.trust_score != null ? Number(r.trust_score) : null,
     scoredAt:   new Date(r.scored_at).toISOString(),
@@ -382,6 +382,7 @@ export interface AgentAlertConfig {
   operating_hours:    { days: string[]; from: string; to: string } | null
   sbom_allowlist:     string[] | null
   mcp_endpoints:      string[] | null
+  connected_llms:     string[] | null  // null = no models declared (EA-04a blind)
 }
 
 export async function getAgentAlertConfig(
@@ -448,7 +449,20 @@ export async function getAgentAlertConfig(
     operating_hours:    parseJsonb<{ days: string[]; from: string; to: string } | null>(row?.operating_hours, null),
     sbom_allowlist:     parseJsonb<string[] | null>(row?.sbom_allowlist, null),
     mcp_endpoints:      parseJsonb<string[] | null>(row?.mcp_endpoints, null),
+    connected_llms:     await getAgentLlmModelNames(tenantId, agentId),
   }
+}
+
+async function getAgentLlmModelNames(tenantId: string, agentId: string): Promise<string[] | null> {
+  const rows = await queryRows<{ name: string }>(
+    `SELECT lm.name
+     FROM agent_llm_models alm
+     JOIN llm_models lm ON lm.model_id = alm.model_id
+     WHERE alm.tenant_id = $1 AND alm.agent_id = $2`,
+    [tenantId, agentId],
+  )
+  if (!rows || rows.length === 0) return null
+  return rows.map(r => r.name)
 }
 
 export async function upsertAgentAlertConfig(

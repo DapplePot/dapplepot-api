@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { env } from '../env.js'
 import { jwtAuth, sdkKeyAuth } from '../middleware/auth.js'
 import { rateLimitMiddleware } from '../middleware/ratelimit.js'
 import { queryRows, queryRow } from '../lib/postgres.js'
@@ -422,7 +423,7 @@ securityRouter.get('/sessions/:id/actions', async (c) => {
 // findings synchronously. SDK key auth only — no JWT required.
 // The SDK calls this instead of running detection logic locally.
 sdkSecurityRouter.post('/online-check', async (c) => {
-  let body: unknown
+  let body: Record<string, unknown>
   try {
     body = await c.req.json()
   } catch (err) {
@@ -430,11 +431,14 @@ sdkSecurityRouter.post('/online-check', async (c) => {
     return c.json({ error: 'Invalid JSON body' }, 400)
   }
 
-  const url = `${process.env.SECURITY_SERVICE_URL || 'http://localhost:8001'}/v1/online-check`
+  // Always overwrite tenant_id with the value from the authenticated SDK key — never trust the SDK-supplied value.
+  body = { ...body, tenant_id: c.get('tenantId') }
+
+  const url = `${env.SECURITY_SERVICE_URL}/v1/online-check`
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': env.INTERNAL_API_SECRET },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(5000),
     })

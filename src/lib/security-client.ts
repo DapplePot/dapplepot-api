@@ -32,7 +32,7 @@ export async function forwardToSecurity(event: NormalizedEvent): Promise<void> {
   try {
     const res = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Internal-Secret': env.INTERNAL_API_SECRET },
       body,
       signal: AbortSignal.timeout(3000),
     })
