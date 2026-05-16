@@ -11,7 +11,7 @@ TypeScript/Hono REST service that serves as the central hub of the DapplePot pla
 ```bash
 pnpm install
 cp .env.example .env   # fill in connection strings
-pnpm db:migrate        # run Postgres migrations
+pnpm migrate           # run Postgres migrations
 pnpm dev               # http://localhost:3000
 ```
 
@@ -21,13 +21,25 @@ pnpm dev               # http://localhost:3000
 |----------|----------|---------|-------------|
 | `POSTGRES_URL` | ✅ | — | `postgresql://user:pass@host:5432/db` |
 | `CLICKHOUSE_HOST` | ✅ | — | ClickHouse host |
-| `CLICKHOUSE_PORT` | — | `8123` | ClickHouse HTTP port |
+| `CLICKHOUSE_PORT` | — | `8443` | ClickHouse HTTP port |
 | `CLICKHOUSE_USER` | — | `dapplepot` | ClickHouse user |
-| `CLICKHOUSE_PASSWORD` | — | — | ClickHouse password |
+| `CLICKHOUSE_PASSWORD` | — | `dapplepot` | ClickHouse password |
 | `REDIS_URL` | ✅ | — | `redis://localhost:6379` |
 | `SECURITY_SERVICE_URL` | ✅ | `http://localhost:8001` | `dapplepot-security` base URL |
+| `INTERNAL_API_SECRET` | ✅ | — | Shared secret for security service calls |
 | `DAPPLEPOT_JWT_SECRET` | ✅ | — | JWT signing secret |
-| `PORT` | — | `3000` | HTTP listen port |
+| `AUDIT_S3_BUCKET` | ✅ | — | S3 bucket for sealed audit archives |
+| `DAPPLEPOT_JWT_ACCESS_EXPIRES_IN` | — | `15m` | Access token TTL |
+| `DAPPLEPOT_JWT_REFRESH_EXPIRES_IN` | — | `7d` | Refresh token TTL |
+| `DAPPLEPOT_EMAIL_PROVIDER` | — | `console` | `console` \| `smtp` \| `resend` |
+| `DAPPLEPOT_EMAIL_FROM` | — | `noreply@dapplepot.io` | Sender address |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_USER` / `SMTP_PASS` | — | — | SMTP config (if provider=smtp) |
+| `RESEND_API_KEY` | — | — | Resend API key (if provider=resend) |
+| `DAPPLEPOT_APP_URL` | — | `http://localhost:5173` | Frontend URL (used in email links) |
+| `API_CORS_ORIGIN` | — | `http://localhost:5173` | Allowed CORS origin |
+| `API_PORT` / `PORT` | — | `3000` | HTTP listen port (Azure injects `PORT`) |
+| `AWS_REGION` | — | `us-east-1` | AWS region for S3 |
+| `AWS_ENDPOINT_URL` | — | — | Override S3 endpoint (e.g. LocalStack) |
 
 ## Ingest — Fire-and-Forget Fanout
 
@@ -71,12 +83,18 @@ Event type mapping (SDK → internal): `session_start→graph_start`, `session_e
 | `GET` | `/v1/sessions` | JWT | Paginated session list |
 | `GET` | `/v1/sessions/:id` | JWT | Session detail |
 | `GET` | `/v1/sessions/:id/trace` | JWT | Cursor-paginated event trace |
+| `GET` | `/v1/sessions/live` | JWT | SSE — live session feed |
 | `GET` | `/v1/analytics/*` | JWT | Overview, LLM usage, error rates, cost |
 | `GET` | `/v1/security/*` | JWT | Risk scores, findings, agent profiles |
+| `POST` | `/v1/sdk/security/online-check` | sdk_key | Proxy real-time threat check to security service |
 | `GET` | `/v1/alerts` | JWT | Alert feed |
 | `GET` | `/v1/agents` | JWT | Agent registry |
+| `GET/POST` | `/v1/llm-models` | JWT | LLM model registry (tenant-scoped) |
+| `GET/POST` | `/v1/audit/archives` | JWT (admin) | List / seal monthly audit archives |
+| `GET` | `/v1/audit/archives/:id` | JWT (admin) | Download sealed archive from S3 |
+| `GET` | `/v1/audit/live` | JWT (admin) | Live gap report since last sealed archive |
+| `GET` | `/v1/audit/sessions/:id` | JWT (admin) | Per-session audit report |
 | `POST` | `/v1/control/kill-switch` | JWT | Publish terminate to Redis |
-| `GET` | `/v1/sessions/live` | JWT | SSE — live session feed |
 
 ## Key Files
 
@@ -86,17 +104,13 @@ Event type mapping (SDK → internal): `session_start→graph_start`, `session_e
 | `src/lib/session-writer.ts` | CAS upsert, state machine, `SDK_TO_INTERNAL` map, out-of-band/closing logic |
 | `src/lib/event-appender.ts` | ClickHouse bulk insert, `RollingDedup` (60s window) |
 | `src/lib/security-client.ts` | Fire-and-forget HTTP forward to security service (5s timeout) |
-| `src/queries/` | Extracted DB query functions (14 files, `.pg.ts` / `.ch.ts`) |
-| `src/lib/db.ts` | postgres.js pool |
+| `src/lib/audit-generator.ts` | Monthly archive sealing + live/per-session report generation |
+| `src/lib/monthly-seal-job.ts` | Scheduled job that auto-seals the previous month's archive |
+| `src/lib/s3.ts` | S3 client for uploading and downloading sealed audit archives |
+| `src/queries/` | Extracted DB query functions (16 files, `.pg.ts` / `.ch.ts`) |
+| `src/lib/postgres.ts` | postgres.js pool |
 | `src/lib/clickhouse.ts` | @clickhouse/client singleton |
 | `src/lib/redis.ts` | ioredis singleton |
 | `src/middleware/auth.ts` | JWT verify + sdk_key lookup |
 | `src/types/` | Shared TypeScript types (copied into `dapplepot-ui/src/types/`) |
 
-## Related Repos
-
-| Repo | Role |
-|------|------|
-| [dapplepot-sdk](../dapplepot-sdk) | Python SDK — sends events here |
-| [dapplepot-security](../dapplepot-security) | FastAPI security engine — receives forwarded events |
-| [dapplepot-ui](../dapplepot-ui) | React dashboard — reads from this API |
