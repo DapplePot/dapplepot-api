@@ -132,3 +132,36 @@ export async function setAgentLlmModels(
     )
   }
 }
+
+export async function getAgentConnectedAgents(tenantId: string, agentId: string): Promise<AgentSummary[]> {
+  const rows = await queryRows<AgentRow>(
+    `SELECT a.agent_id, a.tenant_id, a.name, a.latest_version, a.created_at, a.updated_at
+     FROM agent_connected_agents aca
+     JOIN agents a ON a.agent_id = aca.connected_agent_id
+     WHERE aca.tenant_id = $1::uuid AND aca.agent_id = $2::uuid
+     ORDER BY a.name ASC`,
+    [tenantId, agentId]
+  )
+  return rows.map(mapAgent)
+}
+
+export async function setAgentConnectedAgents(
+  tenantId: string,
+  agentId: string,
+  connectedAgentIds: string[]
+): Promise<void> {
+  // Delete all existing mappings then re-insert — same replace semantics as setAgentLlmModels
+  await queryRow(
+    `DELETE FROM agent_connected_agents WHERE tenant_id = $1::uuid AND agent_id = $2::uuid`,
+    [tenantId, agentId]
+  )
+  if (connectedAgentIds.length === 0) return
+  for (const connectedId of connectedAgentIds) {
+    await queryRow(
+      `INSERT INTO agent_connected_agents (tenant_id, agent_id, connected_agent_id)
+       VALUES ($1::uuid, $2::uuid, $3::uuid)
+       ON CONFLICT DO NOTHING`,
+      [tenantId, agentId, connectedId]
+    )
+  }
+}

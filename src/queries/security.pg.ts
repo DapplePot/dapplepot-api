@@ -383,6 +383,7 @@ export interface AgentAlertConfig {
   sbom_allowlist:     string[] | null
   mcp_endpoints:      string[] | null
   connected_llms:     string[] | null  // null = no models declared (EA-04a blind)
+  connected_agents:   string[] | null  // null = no agents declared (IAC-05a blind)
 }
 
 export async function getAgentAlertConfig(
@@ -450,6 +451,7 @@ export async function getAgentAlertConfig(
     sbom_allowlist:     parseJsonb<string[] | null>(row?.sbom_allowlist, null),
     mcp_endpoints:      parseJsonb<string[] | null>(row?.mcp_endpoints, null),
     connected_llms:     await getAgentLlmModelNames(tenantId, agentId),
+    connected_agents:   await getAgentConnectedAgentNames(tenantId, agentId),
   }
 }
 
@@ -459,6 +461,18 @@ async function getAgentLlmModelNames(tenantId: string, agentId: string): Promise
      FROM agent_llm_models alm
      JOIN llm_models lm ON lm.model_id = alm.model_id
      WHERE alm.tenant_id = $1 AND alm.agent_id = $2`,
+    [tenantId, agentId],
+  )
+  if (!rows || rows.length === 0) return null
+  return rows.map(r => r.name)
+}
+
+async function getAgentConnectedAgentNames(tenantId: string, agentId: string): Promise<string[] | null> {
+  const rows = await queryRows<{ name: string }>(
+    `SELECT a.name
+     FROM agent_connected_agents aca
+     JOIN agents a ON a.agent_id = aca.connected_agent_id
+     WHERE aca.tenant_id = $1 AND aca.agent_id = $2`,
     [tenantId, agentId],
   )
   if (!rows || rows.length === 0) return null

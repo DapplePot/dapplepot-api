@@ -2,7 +2,7 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { jwtAuth } from '../middleware/auth.js'
 import { requireRole } from '../middleware/authorize.js'
-import { listAgents, createAgent, getAgentLlmModels, setAgentLlmModels } from '../queries/agents.pg.js'
+import { listAgents, createAgent, getAgentLlmModels, setAgentLlmModels, getAgentConnectedAgents, setAgentConnectedAgents } from '../queries/agents.pg.js'
 import { redis } from '../lib/redis.js'
 
 export const agentsRouter = new Hono()
@@ -77,4 +77,31 @@ agentsRouter.put('/:id/llm-models', jwtAuth, requireRole('admin'), async (c) => 
     await redis.del(`dp:sec:${tenantId}:agent:${agentId}:cfg`)
     const models = await getAgentLlmModels(tenantId, agentId)
     return c.json(models)
+})
+
+// GET /v1/agents/:id/connected-agents — viewer+
+agentsRouter.get('/:id/connected-agents', jwtAuth, requireRole('viewer'), async (c) => {
+    const tenantId = c.get('tenantId')
+    const agentId  = c.req.param('id')
+    const agents   = await getAgentConnectedAgents(tenantId, agentId)
+    return c.json(agents)
+})
+
+// PUT /v1/agents/:id/connected-agents — admin only
+agentsRouter.put('/:id/connected-agents', jwtAuth, requireRole('admin'), async (c) => {
+    const tenantId = c.get('tenantId')
+    const agentId  = c.req.param('id')
+    const body     = await c.req.json().catch(() => ({}))
+
+    const parsed = z.object({ agentIds: z.array(z.string().uuid()) }).safeParse(body)
+    if (!parsed.success) {
+        return c.json({ error: { code: 'VALIDATION_ERROR', message: parsed.error.message } }, 400)
+    }
+
+    await setAgentConnectedAgents(tenantId, agentId, parsed.data.agentIds)
+    // Invalidate the security scorer's Redis cache so IAC-05a sees the
+    // updated connected_agents list on the very next session.
+    await redis.del(`dp:sec:${tenantId}:agent:${agentId}:cfg`)
+    const agents = await getAgentConnectedAgents(tenantId, agentId)
+    return c.json(agents)
 })
