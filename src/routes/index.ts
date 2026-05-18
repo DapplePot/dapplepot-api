@@ -13,6 +13,7 @@ import { sdkKeysRouter } from './sdk-keys.js'
 import { ingestRouter } from './ingest.js'
 import { auditRouter } from './audit.js'
 import { llmModelsRouter } from './llm-models.js'
+import { toolsRouter } from './tools.js'
 
 type Variables = { tenantId: string; userId: string; role: string }
 
@@ -32,4 +33,5 @@ export function mountRoutes(app: Hono<{ Variables: Variables }>) {
   app.route('/v1/sdk/security', sdkSecurityRouter)
   app.route('/v1/audit', auditRouter)
   app.route('/v1/llm-models', llmModelsRouter)
+  app.route('/v1/tools', toolsRouter)
 }
