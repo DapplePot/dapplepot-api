@@ -371,6 +371,7 @@ export interface AgentAlertConfig {
   asi_composite_threshold:     number | null  // null = platform default (60)
   signal_thresholds:           Record<string, number>
   tool_manifest:               string[]        // [] = not configured
+  privilege_scope:             string[]        // subset of tool_manifest authorized for privilege ops
   max_tool_calls_per_session:  number | null   // null = not configured
   // Agent profile fields (null = auto/heuristic)
   system_prompt:      string | null
@@ -396,6 +397,7 @@ export async function getAgentAlertConfig(
     asi_composite_threshold:     number | null
     signal_thresholds:           Record<string, number>
     tool_manifest:               string[]
+    privilege_scope:             unknown
     max_tool_calls_per_session:  number | null
     system_prompt:               string | null
     environment:                 string | null
@@ -412,6 +414,7 @@ export async function getAgentAlertConfig(
             asi_composite_threshold,
             signal_thresholds,
             tool_manifest,
+            privilege_scope,
             max_tool_calls_per_session,
             system_prompt,
             environment,
@@ -440,6 +443,7 @@ export async function getAgentAlertConfig(
     asi_composite_threshold:    row?.asi_composite_threshold    ?? null,
     signal_thresholds:          parseJsonb<Record<string, number>>(row?.signal_thresholds, {}),
     tool_manifest:              parseJsonb<string[]>(row?.tool_manifest, []),
+    privilege_scope:            parseJsonb<string[]>(row?.privilege_scope, []),
     max_tool_calls_per_session: row?.max_tool_calls_per_session ?? null,
     system_prompt:      row?.system_prompt      ?? null,
     environment:        (row?.environment as 'production' | 'staging' | null) ?? null,
@@ -489,6 +493,7 @@ export async function upsertAgentAlertConfig(
     signal_id?:                   string
     signal_threshold?:            number | null  // null = remove override
     tool_manifest?:               string[]
+    privilege_scope?:             string[]
     max_tool_calls_per_session?:  number | null  // null = remove override
     system_prompt?:               string | null
     environment?:                 'production' | 'staging' | null
@@ -502,7 +507,7 @@ export async function upsertAgentAlertConfig(
   }
 ): Promise<void> {
   const { composite_threshold, llm_composite_threshold, asi_composite_threshold,
-          signal_id, signal_threshold, tool_manifest, max_tool_calls_per_session,
+          signal_id, signal_threshold, tool_manifest, privilege_scope, max_tool_calls_per_session,
           system_prompt, environment, irreversible_tools, network_allowlist,
           working_directory, write_namespace, operating_hours, sbom_allowlist, mcp_endpoints } = opts
 
@@ -564,7 +569,18 @@ export async function upsertAgentAlertConfig(
     }
   }
 
-  if (tool_manifest !== undefined) {
+  if (tool_manifest !== undefined && privilege_scope !== undefined) {
+    // Combined single write when both arrive together (avoids UI race condition)
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, tool_manifest, privilege_scope, updated_at)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         tool_manifest   = EXCLUDED.tool_manifest,
+         privilege_scope = EXCLUDED.privilege_scope,
+         updated_at      = now()`,
+      [tenantId, agentId, JSON.stringify(tool_manifest), JSON.stringify(privilege_scope)],
+    )
+  } else if (tool_manifest !== undefined) {
     await queryRow(
       `INSERT INTO agent_alert_config (tenant_id, agent_id, tool_manifest, updated_at)
        VALUES ($1, $2, $3::jsonb, now())
@@ -572,6 +588,15 @@ export async function upsertAgentAlertConfig(
          tool_manifest = EXCLUDED.tool_manifest,
          updated_at    = now()`,
       [tenantId, agentId, JSON.stringify(tool_manifest)],
+    )
+  } else if (privilege_scope !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, privilege_scope, updated_at)
+       VALUES ($1, $2, $3::jsonb, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         privilege_scope = EXCLUDED.privilege_scope,
+         updated_at      = now()`,
+      [tenantId, agentId, JSON.stringify(privilege_scope)],
     )
   }
 
