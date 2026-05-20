@@ -2,14 +2,20 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { jwtAuth } from '../middleware/auth.js'
 import { requireRole } from '../middleware/authorize.js'
-import { listAgents, createAgent, getAgentLlmModels, setAgentLlmModels, getAgentConnectedAgents, setAgentConnectedAgents } from '../queries/agents.pg.js'
+import { listAgents, createAgent, updateAgent, deleteAgent, getAgentLlmModels, setAgentLlmModels, getAgentConnectedAgents, setAgentConnectedAgents } from '../queries/agents.pg.js'
 import { redis } from '../lib/redis.js'
 
 export const agentsRouter = new Hono()
 
 const CreateAgentSchema = z.object({
-    name: z.string().min(1, 'name is required'),
+    name:          z.string().min(1, 'name is required'),
+    description:   z.string().nullable().optional().default(null),
     latestVersion: z.string().nullable().optional().default(null),
+})
+
+const UpdateAgentSchema = z.object({
+    description:   z.string().nullable().optional(),
+    latestVersion: z.string().nullable().optional(),
 })
 
 // GET /v1/agents — viewer+
@@ -39,7 +45,8 @@ agentsRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
     try {
         const agent = await createAgent({
             tenantId,
-            name: parsed.data.name,
+            name:          parsed.data.name,
+            description:   parsed.data.description ?? null,
             latestVersion: parsed.data.latestVersion ?? null,
         })
         return c.json(agent, 201)
@@ -50,6 +57,41 @@ agentsRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
         }
         return c.json({ error: 'Internal server error' }, 500)
     }
+})
+
+// PATCH /v1/agents/:id — admin only
+agentsRouter.patch('/:id', jwtAuth, requireRole('admin'), async (c) => {
+    const tenantId = c.get('tenantId')
+    const agentId  = c.req.param('id')
+
+    let body: unknown
+    try {
+        body = await c.req.json()
+    } catch {
+        return c.json({ error: 'Invalid JSON body' }, 400)
+    }
+
+    const parsed = UpdateAgentSchema.safeParse(body)
+    if (!parsed.success) {
+        return c.json({ error: parsed.error.errors[0]?.message ?? 'Validation error' }, 400)
+    }
+
+    const agent = await updateAgent({
+        tenantId,
+        agentId,
+        description:   parsed.data.description,
+        latestVersion: parsed.data.latestVersion,
+    })
+    if (!agent) return c.json({ error: 'Agent not found' }, 404)
+    return c.json(agent)
+})
+
+// DELETE /v1/agents/:id — admin only
+agentsRouter.delete('/:id', jwtAuth, requireRole('admin'), async (c) => {
+    const tenantId = c.get('tenantId')
+    const agentId  = c.req.param('id')
+    await deleteAgent(tenantId, agentId)
+    return c.body(null, 204)
 })
 
 // GET /v1/agents/:id/llm-models — viewer+

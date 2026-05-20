@@ -2,21 +2,23 @@ import { queryRows, queryRow } from '../lib/postgres.js'
 import type { LlmModel } from './llm-models.pg.js'
 
 interface AgentRow extends Record<string, unknown> {
-    agent_id: string
-    tenant_id: string
-    name: string
+    agent_id:       string
+    tenant_id:      string
+    name:           string
+    description:    string | null
     latest_version: string | null
-    created_at: Date | string
-    updated_at: Date | string
+    created_at:     Date | string
+    updated_at:     Date | string
 }
 
 export interface AgentSummary {
-    agentId: string
-    tenantId: string
-    name: string
+    agentId:       string
+    tenantId:      string
+    name:          string
+    description:   string | null
     latestVersion: string | null
-    createdAt: string
-    updatedAt: string
+    createdAt:     string
+    updatedAt:     string
 }
 
 function toIso(d: Date | string): string {
@@ -25,18 +27,19 @@ function toIso(d: Date | string): string {
 
 function mapAgent(r: AgentRow): AgentSummary {
     return {
-        agentId: r.agent_id,
-        tenantId: r.tenant_id,
-        name: r.name,
+        agentId:       r.agent_id,
+        tenantId:      r.tenant_id,
+        name:          r.name,
+        description:   r.description,
         latestVersion: r.latest_version,
-        createdAt: toIso(r.created_at),
-        updatedAt: toIso(r.updated_at),
+        createdAt:     toIso(r.created_at),
+        updatedAt:     toIso(r.updated_at),
     }
 }
 
 export async function listAgents(tenantId: string): Promise<AgentSummary[]> {
     const rows = await queryRows<AgentRow>(
-        `SELECT agent_id, tenant_id, name, latest_version, created_at, updated_at
+        `SELECT agent_id, tenant_id, name, description, latest_version, created_at, updated_at
          FROM agents
          WHERE tenant_id = $1
          ORDER BY created_at DESC`,
@@ -51,15 +54,16 @@ const _TRUST_PRIOR_ALPHA = 2.0
 const _TRUST_PRIOR_BETA  = 8.0
 
 export async function createAgent(params: {
-    tenantId: string
-    name: string
+    tenantId:      string
+    name:          string
+    description:   string | null
     latestVersion: string | null
 }): Promise<AgentSummary> {
     const row = await queryRow<AgentRow>(
-        `INSERT INTO agents (tenant_id, name, latest_version)
-         VALUES ($1, $2, $3)
-         RETURNING agent_id, tenant_id, name, latest_version, created_at, updated_at`,
-        [params.tenantId, params.name, params.latestVersion]
+        `INSERT INTO agents (tenant_id, name, description, latest_version)
+         VALUES ($1, $2, $3, $4)
+         RETURNING agent_id, tenant_id, name, description, latest_version, created_at, updated_at`,
+        [params.tenantId, params.name, params.description, params.latestVersion]
     )
     if (!row) throw new Error('Failed to create agent')
 
@@ -81,6 +85,31 @@ export async function createAgent(params: {
     )
 
     return mapAgent(row)
+}
+
+export async function updateAgent(params: {
+    tenantId:      string
+    agentId:       string
+    description:   string | null | undefined
+    latestVersion: string | null | undefined
+}): Promise<AgentSummary | null> {
+    const row = await queryRow<AgentRow>(
+        `UPDATE agents
+         SET description   = COALESCE($3, description),
+             latest_version = COALESCE($4, latest_version),
+             updated_at    = now()
+         WHERE tenant_id = $1 AND agent_id = $2
+         RETURNING agent_id, tenant_id, name, description, latest_version, created_at, updated_at`,
+        [params.tenantId, params.agentId, params.description ?? null, params.latestVersion ?? null]
+    )
+    return row ? mapAgent(row) : null
+}
+
+export async function deleteAgent(tenantId: string, agentId: string): Promise<void> {
+    await queryRow(
+        `DELETE FROM agents WHERE tenant_id = $1 AND agent_id = $2`,
+        [tenantId, agentId]
+    )
 }
 
 export async function getAgentLlmModels(tenantId: string, agentId: string): Promise<LlmModel[]> {

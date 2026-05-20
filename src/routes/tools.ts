@@ -2,14 +2,14 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { jwtAuth } from '../middleware/auth.js'
 import { requireRole } from '../middleware/authorize.js'
-import { listTools, createTool, updateToolSchema } from '../queries/tools.pg.js'
+import { listTools, createTool, updateTool, deleteTool } from '../queries/tools.pg.js'
 import { queryRows } from '../lib/postgres.js'
 import { redis } from '../lib/redis.js'
 
 async function invalidateCachesForTool(tenantId: string, toolName: string): Promise<void> {
   const rows = await queryRows<{ agent_id: string }>(
     `SELECT agent_id FROM agent_alert_config
-     WHERE tenant_id = $1::uuid AND tool_manifest @> $2::jsonb`,
+     WHERE tenant_id = $1 AND tool_manifest @> $2::jsonb`,
     [tenantId, JSON.stringify([toolName])]
   )
   await Promise.all(
@@ -35,6 +35,7 @@ toolsRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
     description: z.string().nullable().optional(),
     category:    z.string().nullable().optional(),
     schema:      z.record(z.unknown()).nullable().optional(),
+    version:     z.string().nullable().optional(),
   }).safeParse(body)
 
   if (!parsed.success) {
@@ -50,6 +51,7 @@ toolsRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
       description: parsed.data.description ?? null,
       category:    parsed.data.category ?? null,
       schema:      parsed.data.schema ?? null,
+      version:     parsed.data.version ?? null,
     })
     if (tool.schema) {
       await invalidateCachesForTool(tenantId, tool.name)
@@ -64,14 +66,17 @@ toolsRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
   }
 })
 
-// PATCH /v1/tools/:id — admin only (update schema)
+// PATCH /v1/tools/:id — admin only (update description, schema, mcp_server_id)
 toolsRouter.patch('/:id', jwtAuth, requireRole('admin'), async (c) => {
   const tenantId = c.get('tenantId')
   const toolId   = c.req.param('id')
   const body     = await c.req.json().catch(() => ({}))
 
   const parsed = z.object({
-    schema: z.record(z.unknown()).nullable(),
+    description:  z.string().nullable().optional(),
+    schema:       z.record(z.unknown()).nullable().optional(),
+    version:      z.string().nullable().optional(),
+    mcpServerId:  z.string().uuid().nullable().optional(),
   }).safeParse(body)
 
   if (!parsed.success) {
@@ -79,9 +84,31 @@ toolsRouter.patch('/:id', jwtAuth, requireRole('admin'), async (c) => {
   }
 
   try {
-    const tool = await updateToolSchema(tenantId, toolId, parsed.data.schema)
+    const tool = await updateTool(tenantId, toolId, {
+      description: parsed.data.description,
+      schema:      parsed.data.schema,
+      version:     parsed.data.version,
+      mcpServerId: parsed.data.mcpServerId,
+    })
     await invalidateCachesForTool(tenantId, tool.name)
     return c.json(tool)
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : ''
+    if (msg.includes('not found') || msg.includes('No rows')) {
+      return c.json({ error: { code: 'NOT_FOUND', message: 'Tool not found' } }, 404)
+    }
+    console.error('[tools PATCH] DB error:', msg, err)
+    throw err
+  }
+})
+
+// DELETE /v1/tools/:id — admin only
+toolsRouter.delete('/:id', jwtAuth, requireRole('admin'), async (c) => {
+  const tenantId = c.get('tenantId')
+  const toolId   = c.req.param('id')
+  try {
+    await deleteTool(tenantId, toolId)
+    return c.json({ ok: true })
   } catch (err) {
     const msg = err instanceof Error ? err.message : ''
     if (msg.includes('not found') || msg.includes('No rows')) {
