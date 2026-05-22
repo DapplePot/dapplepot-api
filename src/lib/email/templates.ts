@@ -93,3 +93,39 @@ export function resetEmail(params: {
         text,
     }
 }
+
+export function securityAlertEmail(params: {
+    alert: Record<string, any>
+    appUrl: string
+}): EmailMessage {
+    const link = `${params.appUrl}/detection?alertId=${params.alert.alertId}`
+    const text = [
+        `🚨 DapplePot Security Alert: ${params.alert.title}`,
+        `Severity: ${params.alert.severity.toUpperCase()}`,
+        `Rule: ${params.alert.ruleName}`,
+        `Triggered: ${params.alert.triggeredAt}`,
+        params.alert.message || '',
+        `View alert: ${link}`
+    ].join('\n')
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<body>
+  <h2>🚨 DapplePot Security Alert</h2>
+  <p><strong>${params.alert.title}</strong></p>
+  <p><strong>Severity:</strong> ${params.alert.severity.toUpperCase()}</p>
+  <p><strong>Rule:</strong> ${params.alert.ruleName}</p>
+  <p><strong>Triggered:</strong> ${params.alert.triggeredAt}</p>
+  <p>${params.alert.message || ''}</p>
+  <p><a href="${link}">View Alert Details</a></p>
+</body>
+</html>`
+
+    return {
+        to: '',
+        subject: `[DapplePot] ${params.alert.severity.toUpperCase()}: ${params.alert.title}`,
+        html,
+        text,
+    }
+}

@@ -15,6 +15,7 @@ import { auditRouter } from './audit.js'
 import { llmModelsRouter } from './llm-models.js'
 import { toolsRouter } from './tools.js'
 import { mcpServersRouter } from './mcp-servers.js'
+import { internalRouter } from './internal.js'
 
 type Variables = { tenantId: string; userId: string; role: string }
 
@@ -36,4 +37,5 @@ export function mountRoutes(app: Hono<{ Variables: Variables }>) {
   app.route('/v1/llm-models', llmModelsRouter)
   app.route('/v1/tools', toolsRouter)
   app.route('/v1/mcp-servers', mcpServersRouter)
+  app.route('/v1/internal', internalRouter)
 }

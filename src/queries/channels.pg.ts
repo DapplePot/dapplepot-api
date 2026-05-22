@@ -7,7 +7,7 @@ function mapChannel(r: Record<string, unknown>): DeliveryChannel {
     name: r['name'] as string,
     channelType: r['channel_type'] as DeliveryChannel['channelType'],
     enabled: r['enabled'] as boolean,
-    config: r['config'] as DeliveryChannel['config'],
+    config: typeof r['config'] === 'string' ? JSON.parse(r['config']) : r['config'],
     createdAt: r['created_at'] instanceof Date
       ? (r['created_at'] as Date).toISOString()
       : String(r['created_at']),
@@ -75,4 +75,12 @@ export async function updateChannel(
   )
   if (!row) return undefined
   return mapChannel(row)
+}
+
+export async function deleteChannel(tenantId: string, channelId: string): Promise<boolean> {
+  const res = await queryRow(
+    `DELETE FROM channels WHERE channel_id = $1 AND tenant_id = $2 RETURNING channel_id`,
+    [channelId, tenantId]
+  )
+  return !!res
 }

@@ -20,6 +20,9 @@ const envSchema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   RESEND_API_KEY: z.string().optional(),
+  TWILIO_ACCOUNT_SID: z.string().optional(),
+  TWILIO_AUTH_TOKEN: z.string().optional(),
+  TWILIO_FROM_NUMBER: z.string().optional(),
   DAPPLEPOT_APP_URL: z.string().default('http://localhost:5173'),
   API_HOST: z.string().default('0.0.0.0'),
   // Azure App Service injects PORT — fall back to API_PORT then 3000

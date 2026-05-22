@@ -61,6 +61,15 @@ alertsRouter.get('/:id', async (c) => {
   return c.json(detail)
 })
 
+// New route to fetch only deliveries for an alert
+alertsRouter.get('/:id/deliveries', async (c) => {
+  const tenantId = c.get('tenantId')
+  const alertId = c.req.param('id')
+  const detail = await getAlertDetail(tenantId, alertId)
+  if (!detail) throw new NotFoundError(`Alert ${alertId} not found`)
+  return c.json({ deliveries: detail.deliveries ?? [] })
+})
+
 alertsRouter.put('/:id/status', async (c) => {
   const tenantId = c.get('tenantId')
   const alertId = c.req.param('id')

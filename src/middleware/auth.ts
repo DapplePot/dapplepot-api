@@ -71,3 +71,11 @@ export const sdkKeyAuth = createMiddleware<{ Variables: Variables }>(async (c, n
   c.set('userId', 'sdk')
   await next()
 })
+
+export const internalSecretAuth = createMiddleware<{ Variables: Variables }>(async (c, next) => {
+  const secret = c.req.header('X-Internal-Secret')
+  if (!secret || secret !== env.INTERNAL_API_SECRET) {
+    return c.json({ error: { code: 'UNAUTHORIZED', message: 'Forbidden' } }, 401)
+  }
+  await next()
+})

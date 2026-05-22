@@ -11,6 +11,7 @@ function mapAlertSummary(r: Record<string, unknown>): AlertSummary {
     source: ((r['source'] as string | null) ?? 'policy') as 'security' | 'policy',
     sessionId: (r['session_id'] as string | null) ?? null,
     agentId: (r['agent_id'] as string | null) ?? null,
+    agentName: (r['agent_name'] as string | null) ?? null,
     severity: r['severity'] as AlertSummary['severity'],
     title: (r['title'] as string) ?? '',
     message: (r['message'] as string) ?? '',
@@ -40,9 +41,11 @@ export async function getAlertList(
       a.payload->>'message'   AS message,
       a.payload->>'rule_type' AS rule_type,
       COALESCE(a.payload->>'source', 'policy') AS source,
-      s.agent_id
+      s.agent_id,
+      ag.name                 AS agent_name
     FROM alerts a
     LEFT JOIN sessions s ON s.session_id = a.session_id
+    LEFT JOIN agents ag ON ag.agent_id = s.agent_id
     WHERE a.tenant_id    = $1
       AND ($2::text        IS NULL OR a.severity = $2)
       AND ($3::text        IS NULL OR a.status   = $3)
@@ -106,9 +109,11 @@ export async function getAlertDetail(
       a.payload->>'message'   AS message,
       a.payload->>'rule_type' AS rule_type,
       COALESCE(a.payload->>'source', 'policy') AS source,
-      s.agent_id
+      s.agent_id,
+      ag.name                 AS agent_name
     FROM alerts a
     LEFT JOIN sessions s ON s.session_id = a.session_id
+    LEFT JOIN agents ag ON ag.agent_id = s.agent_id
     WHERE a.alert_id  = $1
       AND a.tenant_id = $2`,
     [alertId, tenantId]

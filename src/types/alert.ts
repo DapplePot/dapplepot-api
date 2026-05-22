@@ -57,6 +57,7 @@ export interface AlertSummary {
   source:      'security' | 'policy'
   sessionId:   string | null
   agentId:     string | null
+  agentName?:  string | null
   severity:    'info' | 'warning' | 'medium' | 'critical'
   title:       string
   message:     string

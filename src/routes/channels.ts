@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { jwtAuth } from '../middleware/auth.js'
 import { rateLimitMiddleware } from '../middleware/ratelimit.js'
-import { getChannelList, createChannel, updateChannel } from '../queries/channels.pg.js'
+import { getChannelList, createChannel, updateChannel, deleteChannel } from '../queries/channels.pg.js'
 import { NotFoundError } from '../types/common.js'
 
 type Variables = { tenantId: string; userId: string }
@@ -42,4 +42,13 @@ channelsRouter.put('/:id', async (c) => {
   const updated = await updateChannel(tenantId, channelId, body)
   if (!updated) throw new NotFoundError(`Channel ${channelId} not found`)
   return c.json(updated)
+})
+
+channelsRouter.delete('/:id', async (c) => {
+  const tenantId = c.get('tenantId')
+  const channelId = c.req.param('id')
+
+  const deleted = await deleteChannel(tenantId, channelId)
+  if (!deleted) throw new NotFoundError(`Channel ${channelId} not found`)
+  return c.json({ success: true })
 })
