@@ -385,6 +385,7 @@ export interface AgentAlertConfig {
   mcp_endpoints:      string[] | null
   connected_llms:     string[] | null  // null = no models declared (EA-04a blind)
   connected_agents:   string[] | null  // null = no agents declared (IAC-05a blind)
+  token_budget_usd:   number | null    // null = no budget cap (UBC-02b blind)
 }
 
 export async function getAgentAlertConfig(
@@ -408,6 +409,7 @@ export async function getAgentAlertConfig(
     operating_hours:             unknown
     sbom_allowlist:              unknown
     mcp_endpoints:               unknown
+    token_budget_usd:            number | null
   }>(
     `SELECT composite_threshold,
             llm_composite_threshold,
@@ -424,7 +426,8 @@ export async function getAgentAlertConfig(
             write_namespace,
             operating_hours,
             sbom_allowlist,
-            mcp_endpoints
+            mcp_endpoints,
+            token_budget_usd
      FROM agent_alert_config
      WHERE tenant_id = $1 AND agent_id = $2`,
     [tenantId, agentId],
@@ -456,6 +459,7 @@ export async function getAgentAlertConfig(
     mcp_endpoints:      parseJsonb<string[] | null>(row?.mcp_endpoints, null),
     connected_llms:     await getAgentLlmModelNames(tenantId, agentId),
     connected_agents:   await getAgentConnectedAgentNames(tenantId, agentId),
+    token_budget_usd:   row?.token_budget_usd != null ? Number(row.token_budget_usd) : null,
   }
 }
 
@@ -504,12 +508,14 @@ export async function upsertAgentAlertConfig(
     operating_hours?:             { days: string[]; from: string; to: string } | null
     sbom_allowlist?:              string[] | null
     mcp_endpoints?:               string[] | null
+    token_budget_usd?:            number | null
   }
 ): Promise<void> {
   const { composite_threshold, llm_composite_threshold, asi_composite_threshold,
           signal_id, signal_threshold, tool_manifest, privilege_scope, max_tool_calls_per_session,
           system_prompt, environment, irreversible_tools, network_allowlist,
-          working_directory, write_namespace, operating_hours, sbom_allowlist, mcp_endpoints } = opts
+          working_directory, write_namespace, operating_hours, sbom_allowlist, mcp_endpoints,
+          token_budget_usd } = opts
 
   if (composite_threshold !== undefined) {
     await queryRow(
@@ -707,6 +713,17 @@ export async function upsertAgentAlertConfig(
          mcp_endpoints = EXCLUDED.mcp_endpoints,
          updated_at    = now()`,
       [tenantId, agentId, mcp_endpoints !== null ? JSON.stringify(mcp_endpoints) : null],
+    )
+  }
+
+  if (token_budget_usd !== undefined) {
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, token_budget_usd, updated_at)
+       VALUES ($1, $2, $3, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         token_budget_usd = EXCLUDED.token_budget_usd,
+         updated_at       = now()`,
+      [tenantId, agentId, token_budget_usd],
     )
   }
 }

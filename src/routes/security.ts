@@ -231,6 +231,7 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
     operating_hours?:             { days: string[]; from: string; to: string } | null
     sbom_allowlist?:              string[] | null
     mcp_endpoints?:               string[] | null
+    token_budget_usd?:            number | null
   }
   try {
     body = await c.req.json()
@@ -241,7 +242,8 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
   const { composite_threshold, llm_composite_threshold, asi_composite_threshold,
           signal_id, threshold, tool_manifest, privilege_scope, max_tool_calls_per_session,
           system_prompt, environment, irreversible_tools, network_allowlist,
-          working_directory, write_namespace, operating_hours, sbom_allowlist, mcp_endpoints } = body
+          working_directory, write_namespace, operating_hours, sbom_allowlist, mcp_endpoints,
+          token_budget_usd } = body
 
   const isComposite        = composite_threshold !== undefined
   const isLlm              = llm_composite_threshold !== undefined
@@ -259,11 +261,12 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
   const isOperatingHours   = operating_hours !== undefined
   const isSbomAllowlist    = sbom_allowlist !== undefined
   const isMcpEndpoints     = mcp_endpoints !== undefined
+  const isTokenBudget      = token_budget_usd !== undefined
 
   if (!isComposite && !isLlm && !isAsi && !isSignal && !isManifest && !isPrivilegeScope
       && !isMaxToolCalls && !isSystemPrompt && !isEnvironment && !isIrreversible
       && !isNetworkAllowlist && !isWorkingDir && !isWriteNamespace && !isOperatingHours
-      && !isSbomAllowlist && !isMcpEndpoints) {
+      && !isSbomAllowlist && !isMcpEndpoints && !isTokenBudget) {
     return c.json({ error: 'Provide at least one field to update' }, 400)
   }
 
@@ -344,6 +347,11 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
       return c.json({ error: 'mcp_endpoints must be an array of strings or null' }, 400)
     }
   }
+  if (isTokenBudget && token_budget_usd !== null) {
+    if (typeof token_budget_usd !== 'number' || token_budget_usd <= 0) {
+      return c.json({ error: 'token_budget_usd must be a positive number or null' }, 400)
+    }
+  }
 
   await upsertAgentAlertConfig(tenantId, agentId, {
     ...(isComposite        ? { composite_threshold }                            : {}),
@@ -362,6 +370,7 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
     ...(isOperatingHours   ? { operating_hours }                                : {}),
     ...(isSbomAllowlist    ? { sbom_allowlist }                                 : {}),
     ...(isMcpEndpoints     ? { mcp_endpoints }                                  : {}),
+    ...(isTokenBudget      ? { token_budget_usd }                               : {}),
   })
 
   // Invalidate per-agent Redis config cache so the scorer picks up the change
