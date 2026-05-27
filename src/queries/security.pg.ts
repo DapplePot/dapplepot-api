@@ -372,6 +372,7 @@ export interface AgentAlertConfig {
   signal_thresholds:           Record<string, number>
   tool_manifest:               string[]        // [] = not configured
   privilege_scope:             string[]        // subset of tool_manifest authorized for privilege ops
+  tool_approval_policy:        Record<string, 'always_allow' | 'needs_approval'> | null  // null = heuristic
   max_tool_calls_per_session:  number | null   // null = not configured
   // Agent profile fields (null = auto/heuristic)
   system_prompt:      string | null
@@ -399,6 +400,7 @@ export async function getAgentAlertConfig(
     signal_thresholds:           Record<string, number>
     tool_manifest:               string[]
     privilege_scope:             unknown
+    tool_approval_policy:        unknown
     max_tool_calls_per_session:  number | null
     system_prompt:               string | null
     environment:                 string | null
@@ -417,6 +419,7 @@ export async function getAgentAlertConfig(
             signal_thresholds,
             tool_manifest,
             privilege_scope,
+            tool_approval_policy,
             max_tool_calls_per_session,
             system_prompt,
             environment,
@@ -447,6 +450,7 @@ export async function getAgentAlertConfig(
     signal_thresholds:          parseJsonb<Record<string, number>>(row?.signal_thresholds, {}),
     tool_manifest:              parseJsonb<string[]>(row?.tool_manifest, []),
     privilege_scope:            parseJsonb<string[]>(row?.privilege_scope, []),
+    tool_approval_policy:       parseJsonb<Record<string, 'always_allow' | 'needs_approval'> | null>(row?.tool_approval_policy, null),
     max_tool_calls_per_session: row?.max_tool_calls_per_session ?? null,
     system_prompt:      row?.system_prompt      ?? null,
     environment:        (row?.environment as 'production' | 'staging' | null) ?? null,
@@ -498,6 +502,7 @@ export async function upsertAgentAlertConfig(
     signal_threshold?:            number | null  // null = remove override
     tool_manifest?:               string[]
     privilege_scope?:             string[]
+    tool_approval_policy?:        Record<string, 'always_allow' | 'needs_approval'> | null
     max_tool_calls_per_session?:  number | null  // null = remove override
     system_prompt?:               string | null
     environment?:                 'production' | 'staging' | null
@@ -512,7 +517,8 @@ export async function upsertAgentAlertConfig(
   }
 ): Promise<void> {
   const { composite_threshold, llm_composite_threshold, asi_composite_threshold,
-          signal_id, signal_threshold, tool_manifest, privilege_scope, max_tool_calls_per_session,
+          signal_id, signal_threshold, tool_manifest, privilege_scope, tool_approval_policy,
+          max_tool_calls_per_session,
           system_prompt, environment, irreversible_tools, network_allowlist,
           working_directory, write_namespace, operating_hours, sbom_allowlist, mcp_endpoints,
           token_budget_usd } = opts
@@ -575,8 +581,21 @@ export async function upsertAgentAlertConfig(
     }
   }
 
-  if (tool_manifest !== undefined && privilege_scope !== undefined) {
-    // Combined single write when both arrive together (avoids UI race condition)
+  if (tool_manifest !== undefined && privilege_scope !== undefined && tool_approval_policy !== undefined) {
+    // Combined atomic write when all three arrive together (avoids race conditions)
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, tool_manifest, privilege_scope, tool_approval_policy, updated_at)
+       VALUES ($1, $2, $3::jsonb, $4::jsonb, $5::jsonb, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         tool_manifest        = EXCLUDED.tool_manifest,
+         privilege_scope      = EXCLUDED.privilege_scope,
+         tool_approval_policy = EXCLUDED.tool_approval_policy,
+         updated_at           = now()`,
+      [tenantId, agentId, JSON.stringify(tool_manifest), JSON.stringify(privilege_scope),
+       tool_approval_policy !== null ? JSON.stringify(tool_approval_policy) : null],
+    )
+  } else if (tool_manifest !== undefined && privilege_scope !== undefined) {
+    // Legacy combined write without approval policy
     await queryRow(
       `INSERT INTO agent_alert_config (tenant_id, agent_id, tool_manifest, privilege_scope, updated_at)
        VALUES ($1, $2, $3::jsonb, $4::jsonb, now())
@@ -603,6 +622,18 @@ export async function upsertAgentAlertConfig(
          privilege_scope = EXCLUDED.privilege_scope,
          updated_at      = now()`,
       [tenantId, agentId, JSON.stringify(privilege_scope)],
+    )
+  }
+
+  if (tool_approval_policy !== undefined && tool_manifest === undefined) {
+    // Standalone approval policy write (manifest+scope+policy are handled atomically above)
+    await queryRow(
+      `INSERT INTO agent_alert_config (tenant_id, agent_id, tool_approval_policy, updated_at)
+       VALUES ($1, $2, $3::jsonb, now())
+       ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
+         tool_approval_policy = EXCLUDED.tool_approval_policy,
+         updated_at           = now()`,
+      [tenantId, agentId, tool_approval_policy !== null ? JSON.stringify(tool_approval_policy) : null],
     )
   }
 

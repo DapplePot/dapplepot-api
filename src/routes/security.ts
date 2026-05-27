@@ -221,6 +221,7 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
     threshold?:                   number | null
     tool_manifest?:               string[]
     privilege_scope?:             string[]
+    tool_approval_policy?:        Record<string, 'always_allow' | 'needs_approval'> | null
     max_tool_calls_per_session?:  number | null
     system_prompt?:               string | null
     environment?:                 'production' | 'staging' | null
@@ -240,7 +241,8 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
   }
 
   const { composite_threshold, llm_composite_threshold, asi_composite_threshold,
-          signal_id, threshold, tool_manifest, privilege_scope, max_tool_calls_per_session,
+          signal_id, threshold, tool_manifest, privilege_scope, tool_approval_policy,
+          max_tool_calls_per_session,
           system_prompt, environment, irreversible_tools, network_allowlist,
           working_directory, write_namespace, operating_hours, sbom_allowlist, mcp_endpoints,
           token_budget_usd } = body
@@ -251,6 +253,7 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
   const isSignal           = signal_id !== undefined
   const isManifest         = tool_manifest !== undefined
   const isPrivilegeScope   = privilege_scope !== undefined
+  const isApprovalPolicy   = tool_approval_policy !== undefined
   const isMaxToolCalls     = max_tool_calls_per_session !== undefined
   const isSystemPrompt     = system_prompt !== undefined
   const isEnvironment      = environment !== undefined
@@ -264,7 +267,7 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
   const isTokenBudget      = token_budget_usd !== undefined
 
   if (!isComposite && !isLlm && !isAsi && !isSignal && !isManifest && !isPrivilegeScope
-      && !isMaxToolCalls && !isSystemPrompt && !isEnvironment && !isIrreversible
+      && !isApprovalPolicy && !isMaxToolCalls && !isSystemPrompt && !isEnvironment && !isIrreversible
       && !isNetworkAllowlist && !isWorkingDir && !isWriteNamespace && !isOperatingHours
       && !isSbomAllowlist && !isMcpEndpoints && !isTokenBudget) {
     return c.json({ error: 'Provide at least one field to update' }, 400)
@@ -301,6 +304,13 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
   if (isPrivilegeScope) {
     if (!Array.isArray(privilege_scope) || privilege_scope.some(t => typeof t !== 'string')) {
       return c.json({ error: 'privilege_scope must be an array of strings' }, 400)
+    }
+  }
+  if (isApprovalPolicy && tool_approval_policy !== null) {
+    const VALID_POLICIES = new Set(['always_allow', 'needs_approval'])
+    if (typeof tool_approval_policy !== 'object' || Array.isArray(tool_approval_policy)
+        || Object.values(tool_approval_policy).some(v => !VALID_POLICIES.has(v))) {
+      return c.json({ error: "tool_approval_policy must be null or an object mapping tool names to 'always_allow' | 'needs_approval'" }, 400)
     }
   }
   if (isMaxToolCalls && max_tool_calls_per_session !== null) {
@@ -360,6 +370,7 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
     ...(isSignal           ? { signal_id, signal_threshold: threshold ?? null } : {}),
     ...(isManifest         ? { tool_manifest }                                  : {}),
     ...(isPrivilegeScope   ? { privilege_scope }                                : {}),
+    ...(isApprovalPolicy   ? { tool_approval_policy }                           : {}),
     ...(isMaxToolCalls     ? { max_tool_calls_per_session }                     : {}),
     ...(isSystemPrompt     ? { system_prompt }                                  : {}),
     ...(isEnvironment      ? { environment }                                    : {}),
