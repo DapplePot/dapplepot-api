@@ -155,33 +155,36 @@ export async function getCost(
   tenantId: string,
   window: string
 ): Promise<CostPoint[]> {
-  const days = windowToDays(window)
-  const row = await chQueryRow<{
+  const hours = windowToHours(window)
+  const rows = await chQuery<{
+    agent_id: string
     input_tokens: number
     output_tokens: number
     total_tokens: number
   }>(
     `SELECT
-      sum(input_tokens)  AS input_tokens,
-      sum(output_tokens) AS output_tokens,
-      sum(total_tokens)  AS total_tokens
-    FROM obs_session_tokens
+      agent_id,
+      toUInt64(sumMerge(input_tokens_sum))  AS input_tokens,
+      toUInt64(sumMerge(output_tokens_sum)) AS output_tokens,
+      toUInt64(sumMerge(input_tokens_sum) + sumMerge(output_tokens_sum)) AS total_tokens
+    FROM obs_llm_hourly
     FINAL
     WHERE tenant_id = {tenantId: String}
-      AND toDate(created_at) >= today() - {days: UInt32}`,
-    { tenantId, days }
+      AND hour >= toStartOfHour(now() - INTERVAL {hours: UInt32} HOUR)
+    GROUP BY agent_id
+    ORDER BY total_tokens DESC`,
+    { tenantId, hours }
   )
 
-  if (!row) return []
-  return [{
-    agentId: '',
+  return rows.map((row) => ({
+    agentId: row.agent_id,
     inputTokens: row.input_tokens,
     outputTokens: row.output_tokens,
     totalTokens: row.total_tokens,
     estimatedCostUsd:
       (row.input_tokens / 1_000_000) * COST_PER_M_INPUT +
       (row.output_tokens / 1_000_000) * COST_PER_M_OUTPUT,
-  }]
+  }))
 }
 
 export async function getOverviewChMetrics(

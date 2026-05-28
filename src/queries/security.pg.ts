@@ -296,8 +296,9 @@ export async function getAgentProfile(
               asi_score, asi_band, trust_score, scored_at
        FROM session_risk_scores
        WHERE agent_id = $1 AND tenant_id = $2
+         AND scored_at >= NOW() - INTERVAL '24 hours'
        ORDER BY scored_at DESC
-       LIMIT 20`,
+       LIMIT 24`,
       [agentId, tenantId],
     ),
   ])
