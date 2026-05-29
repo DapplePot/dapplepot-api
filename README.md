@@ -94,7 +94,7 @@ Event type mapping (SDK → internal): `session_start→graph_start`, `session_e
 | `GET` | `/v1/audit/archives/:id` | JWT (admin) | Download sealed archive from S3 |
 | `GET` | `/v1/audit/live` | JWT (admin) | Live gap report since last sealed archive |
 | `GET` | `/v1/audit/sessions/:id` | JWT (admin) | Per-session audit report |
-| `POST` | `/v1/control/kill-switch` | JWT | Publish terminate to Redis |
+| `GET` | `/v1/control/commands` | sdk_key | Poll pending SDK commands (LPOP queue) |
 
 ## Key Files
 
@@ -107,7 +107,7 @@ Event type mapping (SDK → internal): `session_start→graph_start`, `session_e
 | `src/lib/audit-generator.ts` | Monthly archive sealing + live/per-session report generation |
 | `src/lib/monthly-seal-job.ts` | Scheduled job that auto-seals the previous month's archive |
 | `src/lib/s3.ts` | S3 client for uploading and downloading sealed audit archives |
-| `src/queries/` | Extracted DB query functions (16 files, `.pg.ts` / `.ch.ts`) |
+| `src/queries/` | Extracted DB query functions (18 files, `.pg.ts` / `.ch.ts`) |
 | `src/lib/postgres.ts` | postgres.js pool |
 | `src/lib/clickhouse.ts` | @clickhouse/client singleton |
 | `src/lib/redis.ts` | ioredis singleton |
