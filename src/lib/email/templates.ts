@@ -1,5 +1,9 @@
 import type { EmailMessage } from './index.js'
 
+function escapeHtml(str: string): string {
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
 export function inviteEmail(params: {
     appUrl: string
     token: string
@@ -73,7 +77,7 @@ export function resetEmail(params: {
 <html>
 <body style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
   <h2>Reset your DapplePot password</h2>
-  <p>Hi ${params.userName},</p>
+  <p>Hi ${escapeHtml(params.userName)},</p>
   <p>You requested a password reset. Click the button below to choose a new password.</p>
   <p style="margin:32px 0">
     <a href="${link}"

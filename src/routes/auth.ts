@@ -160,7 +160,9 @@ authRouter.post('/forgot-password', async (c) => {
         await createPasswordReset({ userId: user.userId, tokenHash, expiresAt })
 
         const msg = resetEmail({ appUrl: env.DAPPLEPOT_APP_URL, token: rawToken, userName: user.name || user.email })
-        await emailProvider.send({ ...msg, to: user.email })
+        await emailProvider.send({ ...msg, to: user.email }).catch(err =>
+            console.error('[auth] failed to send reset email:', err)
+        )
     }
 
     return c.json({ ok: true, message: 'If that email exists, a reset link has been sent.' })

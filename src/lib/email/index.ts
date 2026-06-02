@@ -17,11 +17,14 @@ export interface EmailProvider {
 export function createEmailProvider(): EmailProvider {
     switch (env.DAPPLEPOT_EMAIL_PROVIDER) {
         case 'smtp':
+            if (!env.SMTP_HOST || !env.SMTP_PORT || !env.SMTP_USER || !env.SMTP_PASS) {
+                throw new Error('SMTP_HOST, SMTP_PORT, SMTP_USER, and SMTP_PASS are required when DAPPLEPOT_EMAIL_PROVIDER=smtp')
+            }
             return new SmtpEmailProvider({
-                host: env.SMTP_HOST!,
-                port: env.SMTP_PORT!,
-                user: env.SMTP_USER!,
-                pass: env.SMTP_PASS!,
+                host: env.SMTP_HOST,
+                port: env.SMTP_PORT,
+                user: env.SMTP_USER,
+                pass: env.SMTP_PASS,
                 from: env.DAPPLEPOT_EMAIL_FROM,
             })
         case 'resend':

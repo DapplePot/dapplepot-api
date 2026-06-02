@@ -39,10 +39,17 @@ function msUntilNextFirstOfMonth(): number {
   return next.getTime() - now.getTime()
 }
 
+const MAX_SAFE_TIMEOUT = 2_147_483_647 // Node setTimeout max (32-bit signed int, ~24.8 days)
+
 function scheduleMonthlyRun(): void {
   const ms = msUntilNextFirstOfMonth()
   const nextRun = new Date(Date.now() + ms).toISOString()
   console.log(`[audit-seal] Next run scheduled for ${nextRun} (in ${Math.round(ms / 3600000)}h)`)
+
+  if (ms > MAX_SAFE_TIMEOUT) {
+    setTimeout(() => scheduleMonthlyRun(), MAX_SAFE_TIMEOUT)
+    return
+  }
 
   setTimeout(async () => {
     await sealPreviousMonth().catch(err => console.error('[audit-seal] Unhandled error:', err))
