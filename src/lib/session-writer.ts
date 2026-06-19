@@ -38,6 +38,7 @@ const TRANSITIONS = new Map<string, string>([
   ['open|graph_error', 'terminated'],
   ['stub|graph_end',   'finalised'],  // session_end wins the race before session_start arrives
   ['stub|graph_error', 'terminated'], // session_error wins the race before session_start arrives
+  ['finalised|graph_start', 'open'],  // multi-turn: new run on same session (append like a conversation)
 ])
 
 const TERMINAL = new Set(['terminated', 'finalised'])
@@ -47,7 +48,11 @@ function nextStatus(current: string, eventType: string): string | null {
 }
 
 function isLegalTransition(current: string, eventType: string): boolean {
-  if (TERMINAL.has(current)) return false
+  if (TERMINAL.has(current)) {
+    // Only finalised sessions can be re-opened by a new graph_start.
+    // terminated (security kill) stays terminal permanently.
+    return current === 'finalised' && eventType === 'graph_start'
+  }
   const statusChangingTypes = new Set(['graph_start', 'graph_end', 'graph_error'])
   if (statusChangingTypes.has(eventType)) {
     return TRANSITIONS.has(`${current}|${eventType}`)
@@ -225,7 +230,10 @@ export async function upsertEvent(event: NormalizedEvent): Promise<void> {
     // sequence index. When events split across batches the closure event can land in a
     // later batch with batchSeq=0, which would otherwise be < lastSeq from earlier events.
     const isClosingEvent = internalType === 'graph_end' || internalType === 'graph_error'
-    if (!isOutOfBand && !isClosingEvent && event.sequenceIndex <= lastSeq) return
+    // Re-open: a new graph_start on a finalised session starts a fresh run. last_seq must
+    // be reset so events from the new run (sequence_index starting at 0) are not dropped.
+    const isReopen = currentStatus === 'finalised' && internalType === 'graph_start'
+    if (!isOutOfBand && !isClosingEvent && !isReopen && event.sequenceIndex <= lastSeq) return
     if (!isLegalTransition(currentStatus, internalType)) return
 
     const patch = buildPatch(internalType, event, currentStartedAt)
@@ -236,7 +244,7 @@ export async function upsertEvent(event: NormalizedEvent): Promise<void> {
       `UPDATE sessions
        SET
          status          = CASE WHEN $1::text IS NOT NULL THEN $1::text ELSE status END,
-         started_at      = COALESCE($2::timestamptz, started_at),
+         started_at      = CASE WHEN $20::boolean THEN started_at ELSE COALESCE($2::timestamptz, started_at) END,
          ended_at        = COALESCE($3::timestamptz, ended_at),
          duration_ms     = COALESCE($4::int, duration_ms),
          exit_reason     = COALESCE($5, exit_reason),
@@ -254,7 +262,11 @@ export async function upsertEvent(event: NormalizedEvent): Promise<void> {
                              ELSE graph_runs
                            END,
          last_active_at  = $15::timestamptz,
-         last_seq        = CASE WHEN $19::boolean THEN last_seq ELSE GREATEST(last_seq, $16) END,
+         last_seq        = CASE
+                             WHEN $20::boolean THEN -1
+                             WHEN $19::boolean THEN last_seq
+                             ELSE GREATEST(last_seq, $16)
+                           END,
          version         = version + 1,
          updated_at      = now()
        WHERE session_id = $17
@@ -280,6 +292,7 @@ export async function upsertEvent(event: NormalizedEvent): Promise<void> {
         event.sessionId,
         currentVersion,
         isOutOfBand,
+        isReopen,
       ],
     )
 

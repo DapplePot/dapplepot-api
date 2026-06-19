@@ -65,11 +65,6 @@ sessionsRouter.get('/:id/trace', async (c) => {
 
   const tracePage = await getTracePage(tenantId, sessionId, afterSeq, limit)
 
-  if (pgRow.status === 'finalised') {
-    c.header('Cache-Control', 'public, max-age=300, s-maxage=300')
-    c.header('Vary', 'Authorization')
-  }
-
   return c.json(tracePage)
 })
 
@@ -91,11 +86,6 @@ sessionsRouter.get('/:id', async (c) => {
   const tenantId = c.get('tenantId')
   const sessionId = c.req.param('id')
   const detail = await stitchSessionDetail(tenantId, sessionId)
-
-  if (detail.status === 'finalised') {
-    c.header('Cache-Control', 'public, max-age=300, s-maxage=300')
-    c.header('Vary', 'Authorization')
-  }
 
   return c.json(detail)
 })
