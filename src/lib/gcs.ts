@@ -37,7 +37,8 @@ export async function uploadToGCS(
     })
     return `https://storage.googleapis.com/${bucketName}/${destination}`
   } else {
-    console.warn('⚠️ GCS credentials not configured. Returning simulated GCS URL for development.')
-    return `https://storage.googleapis.com/${bucketName}/${destination}`
+    console.warn('⚠️ GCS credentials not configured. Returning data URL for local preview.')
+    const base64 = buffer.toString('base64')
+    return `data:${contentType};base64,${base64}`
   }
 }
