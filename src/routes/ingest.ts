@@ -29,7 +29,6 @@ const BATCH_DEDUP_TTL = 3600
 function normalize(
   raw: Record<string, unknown>,
   tenantId: string,
-  batchSeq: number,
 ): NormalizedEvent | null {
   const sdkEventType = String(raw.dp_event_type ?? raw.event_type ?? '')
   const sessionId = String(raw.dp_session_id ?? raw.session_id ?? '')
@@ -49,7 +48,7 @@ function normalize(
     userContextId: raw.user_context_id as string | undefined,
     sdkEventType,
     emittedAt: String(raw.ts ?? raw.emitted_at ?? new Date().toISOString()),
-    sequenceIndex: Number(raw.sequence_index ?? batchSeq),
+    sequenceIndex: Number(raw.sequence_index),
     payload: (raw.payload as Record<string, unknown>) ?? {},
   }
 }
@@ -78,8 +77,8 @@ ingestRouter.post('/events', sdkKeyAuth, async (c) => {
 
   // Normalize events
   const events: NormalizedEvent[] = []
-  for (let i = 0; i < rawEvents.length; i++) {
-    const normalized = normalize(rawEvents[i] as Record<string, unknown>, tenantId, i)
+  for (const raw of rawEvents) {
+    const normalized = normalize(raw as Record<string, unknown>, tenantId)
     if (normalized) events.push(normalized)
   }
 

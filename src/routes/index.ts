@@ -17,6 +17,7 @@ import { toolsRouter } from './tools.js'
 import { mcpServersRouter } from './mcp-servers.js'
 import { internalRouter } from './internal.js'
 import { blogsRouter } from './blogs.js'
+import { seqRouter } from './seq.js'
 
 type Variables = { tenantId: string; userId: string; role: string }
 
@@ -34,6 +35,7 @@ export function mountRoutes(app: Hono<{ Variables: Variables }>) {
   app.route('/v1/channels', channelsRouter)
   app.route('/v1/security', securityRouter)
   app.route('/v1/sdk/security', sdkSecurityRouter)
+  app.route('/v1/sdk/seq', seqRouter)
   app.route('/v1/audit', auditRouter)
   app.route('/v1/llm-models', llmModelsRouter)
   app.route('/v1/tools', toolsRouter)
