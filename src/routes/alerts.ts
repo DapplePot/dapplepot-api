@@ -34,11 +34,9 @@ alertsRouter.get('/', async (c) => {
     limit: q['limit'] ? Number(q['limit']) : 20,
     ...(q['severity'] ? { severity: q['severity'] as 'info' | 'warning' | 'medium' | 'critical' } : {}),
     ...(q['status']   ? { status: q['status'] as 'open' | 'acknowledged' | 'resolved' }           : {}),
-    ...(q['ruleId']   ? { ruleId: q['ruleId'] }   : {}),
     ...(q['agentId']  ? { agentId: q['agentId'] } : {}),
     ...(q['since']    ? { since: q['since'] }     : {}),
     ...(q['until']    ? { until: q['until'] }     : {}),
-    ...(q['source']   ? { source: q['source'] as 'security' | 'policy' } : {}),
   })
 
   const limit = Math.min(q['limit'] ? Number(q['limit']) : 20, 100)

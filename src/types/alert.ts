@@ -20,7 +20,6 @@ export interface AlertDetailPayload {
   title?:                   string
   message?:                 string
   rule_type?:               string
-  source?:                  'security' | 'policy'
   agent_id?:                string | null
   // Composite risk scores
   llm_score?:               number
@@ -51,10 +50,8 @@ export interface AlertDetailPayload {
 
 export interface AlertSummary {
   alertId:     string
-  ruleId:      string | null
   ruleName:    string
   ruleType:    string
-  source:      'security' | 'policy'
   sessionId:   string | null
   agentId:     string | null
   agentName?:  string | null
@@ -93,7 +90,6 @@ export interface AlertStats {
     resolved: number
   }>
   topRules: Array<{
-    ruleId: string
     ruleName: string
     count: number
   }>

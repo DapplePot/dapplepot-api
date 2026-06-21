@@ -5,10 +5,8 @@ import type { AlertListParams } from '../types/common.js'
 function mapAlertSummary(r: Record<string, unknown>): AlertSummary {
   return {
     alertId: r['alert_id'] as string,
-    ruleId: (r['rule_id'] as string | null) ?? null,
     ruleName: (r['rule_name'] as string) ?? '',
     ruleType: (r['rule_type'] as string) ?? '',
-    source: ((r['source'] as string | null) ?? 'policy') as 'security' | 'policy',
     sessionId: (r['session_id'] as string | null) ?? null,
     agentId: (r['agent_id'] as string | null) ?? null,
     agentName: (r['agent_name'] as string | null) ?? null,
@@ -35,12 +33,11 @@ export async function getAlertList(
 
   const rows = await queryRows<Record<string, unknown>>(
     `SELECT
-      a.alert_id, a.rule_id, a.rule_name, a.severity, a.session_id,
+      a.alert_id, a.rule_name, a.severity, a.session_id,
       a.triggered_at, a.status, a.resolved_at,
       a.payload->>'title'     AS title,
       a.payload->>'message'   AS message,
       a.payload->>'rule_type' AS rule_type,
-      COALESCE(a.payload->>'source', 'policy') AS source,
       s.agent_id,
       ag.name                 AS agent_name
     FROM alerts a
@@ -49,22 +46,18 @@ export async function getAlertList(
     WHERE a.tenant_id    = $1
       AND ($2::text        IS NULL OR a.severity = $2)
       AND ($3::text        IS NULL OR a.status   = $3)
-      AND ($4::uuid        IS NULL OR a.rule_id  = $4)
-      AND ($5::uuid        IS NULL OR s.agent_id = $5)
-      AND ($6::timestamptz IS NULL OR a.triggered_at >= $6)
-      AND ($7::timestamptz IS NULL OR a.triggered_at <  $7)
-      AND ($8::text        IS NULL OR COALESCE(a.payload->>'source', 'policy') = $8)
+      AND ($4::uuid        IS NULL OR s.agent_id = $4)
+      AND ($5::timestamptz IS NULL OR a.triggered_at >= $5)
+      AND ($6::timestamptz IS NULL OR a.triggered_at <  $6)
     ORDER BY a.triggered_at DESC
-    LIMIT $9 OFFSET $10`,
+    LIMIT $7 OFFSET $8`,
     [
       tenantId,
       params.severity ?? null,
       params.status ?? null,
-      params.ruleId ?? null,
       params.agentId ?? null,
       params.since ?? null,
       params.until ?? null,
-      params.source ?? null,
       limit,
       offset,
     ]
@@ -77,20 +70,16 @@ export async function getAlertList(
     WHERE a.tenant_id    = $1
       AND ($2::text        IS NULL OR a.severity = $2)
       AND ($3::text        IS NULL OR a.status   = $3)
-      AND ($4::uuid        IS NULL OR a.rule_id  = $4)
-      AND ($5::uuid        IS NULL OR s.agent_id = $5)
-      AND ($6::timestamptz IS NULL OR a.triggered_at >= $6)
-      AND ($7::timestamptz IS NULL OR a.triggered_at <  $7)
-      AND ($8::text        IS NULL OR COALESCE(a.payload->>'source', 'policy') = $8)`,
+      AND ($4::uuid        IS NULL OR s.agent_id = $4)
+      AND ($5::timestamptz IS NULL OR a.triggered_at >= $5)
+      AND ($6::timestamptz IS NULL OR a.triggered_at <  $6)`,
     [
       tenantId,
       params.severity ?? null,
       params.status ?? null,
-      params.ruleId ?? null,
       params.agentId ?? null,
       params.since ?? null,
       params.until ?? null,
-      params.source ?? null,
     ]
   )
 
@@ -103,12 +92,11 @@ export async function getAlertDetail(
 ): Promise<AlertDetail | undefined> {
   const row = await queryRow<Record<string, unknown>>(
     `SELECT
-      a.alert_id, a.rule_id, a.rule_name, a.severity, a.session_id,
+      a.alert_id, a.rule_name, a.severity, a.session_id,
       a.triggered_at, a.status, a.resolved_at, a.dedup_key, a.payload,
       a.payload->>'title'     AS title,
       a.payload->>'message'   AS message,
       a.payload->>'rule_type' AS rule_type,
-      COALESCE(a.payload->>'source', 'policy') AS source,
       s.agent_id,
       ag.name                 AS agent_name
     FROM alerts a
@@ -207,12 +195,12 @@ export async function getAlertStats(
       GROUP BY severity`,
       [tenantId, interval]
     ),
-    queryRows<{ rule_id: string; rule_name: string; count: number }>(
-      `SELECT rule_id, rule_name, COUNT(*) AS count
+    queryRows<{ rule_name: string; count: number }>(
+      `SELECT rule_name, COUNT(*) AS count
       FROM alerts
       WHERE tenant_id    = $1
         AND triggered_at >= NOW() - $2::interval
-      GROUP BY rule_id, rule_name
+      GROUP BY rule_name
       ORDER BY count DESC
       LIMIT 10`,
       [tenantId, interval]
@@ -229,7 +217,6 @@ export async function getAlertStats(
       resolved: Number(r.resolved),
     })),
     topRules: topRulesRows.map((r) => ({
-      ruleId: r.rule_id,
       ruleName: r.rule_name,
       count: Number(r.count),
     })),

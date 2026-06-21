@@ -86,7 +86,10 @@ export async function getSessionList(
       AND ($7::text        IS NULL OR s.session_id::text LIKE $7 || '%'
                                     OR s.user_context_id = $7)
     GROUP BY s.session_id
-    ORDER BY s.started_at DESC NULLS LAST
+    ORDER BY CASE WHEN s.status = 'open'
+                  THEN s.last_active_at
+                  ELSE s.ended_at
+             END DESC NULLS LAST
     LIMIT $8 OFFSET $9`,
     [
       tenantId,
@@ -154,7 +157,6 @@ export async function getSessionAlerts(
 ): Promise<AlertSummary[]> {
   const rows = await queryRows<{
     alert_id: string
-    rule_id: string | null
     rule_name: string
     severity: string
     triggered_at: Date
@@ -166,12 +168,11 @@ export async function getSessionAlerts(
     agent_id: string | null
   }>(
     `SELECT
-      a.alert_id, a.rule_id, a.rule_name, a.severity, a.triggered_at,
+      a.alert_id, a.rule_name, a.severity, a.triggered_at,
       a.status, a.resolved_at,
       a.payload->>'title'      AS title,
       a.payload->>'message'    AS message,
       a.payload->>'rule_type'  AS rule_type,
-      COALESCE(a.payload->>'source', 'policy') AS source,
       s.agent_id
     FROM alerts a
     LEFT JOIN sessions s ON s.session_id = a.session_id
@@ -183,10 +184,8 @@ export async function getSessionAlerts(
 
   return rows.map((r) => ({
     alertId: r.alert_id,
-    ruleId: r.rule_id,
     ruleName: r.rule_name ?? '',
     ruleType: r.rule_type ?? '',
-    source: (((r as Record<string, unknown>)['source'] as string | null) ?? 'policy') as 'security' | 'policy',
     sessionId,
     agentId: r.agent_id,
     severity: r.severity as AlertSummary['severity'],

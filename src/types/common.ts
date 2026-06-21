@@ -32,9 +32,7 @@ export interface SessionListParams extends ListParams {
 export interface AlertListParams extends ListParams {
   severity?: 'info' | 'warning' | 'medium' | 'critical'
   status?: 'open' | 'acknowledged' | 'resolved'
-  ruleId?: string
   agentId?: string
-  source?: 'security' | 'policy'
 }
 
 export class NotFoundError extends Error {
