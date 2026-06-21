@@ -42,3 +42,4 @@ export async function uploadToGCS(
     return `data:${contentType};base64,${base64}`
   }
 }
+
