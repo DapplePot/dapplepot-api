@@ -275,6 +275,31 @@ export async function getAgentSessionCounts(
 }
 
 export async function getTrends(tenantId: string, hours: number): Promise<TrendPoint[]> {
+  // Bucket granularity is chosen to keep sparkline density readable (~20–30 dots):
+  //   ≤ 24h  → hourly  (up to 24 dots)
+  //   ≤ 7d   → 6-hour  (28 dots)
+  //   > 7d   → daily   (up to ~31 dots)
+  //
+  // WITH FILL pads idle buckets with zeros so the returned series is anchored
+  // to a stable time axis (leftmost = now-hours, rightmost = now) regardless
+  // of activity density.
+  const bucketTemplate =
+    hours <= 24
+      ? 'toStartOfHour({col})'
+      : hours <= 168
+        ? 'toStartOfInterval({col}, toIntervalHour(6))'
+        : 'toStartOfDay({col})'
+  const step =
+    hours <= 24
+      ? 'toIntervalHour(1)'
+      : hours <= 168
+        ? 'toIntervalHour(6)'
+        : 'toIntervalDay(1)'
+
+  const bucketColumn = bucketTemplate.replace('{col}', 'hour')
+  const bucketStart  = bucketTemplate.replace('{col}', 'now() - INTERVAL {hours: UInt32} HOUR')
+  const bucketEnd    = bucketTemplate.replace('{col}', 'now()')
+
   const rows = await chQuery<{
     hour: string
     session_count: number
@@ -282,22 +307,26 @@ export async function getTrends(tenantId: string, hours: number): Promise<TrendP
     avg_latency_ms: number
   }>(
     `SELECT
-      toStartOfHour(hour)              AS hour,
-      countMerge(call_count)           AS session_count,
-      sumMerge(input_tokens_sum) + sumMerge(output_tokens_sum) AS token_count,
-      avgMerge(latency_avg)            AS avg_latency_ms
+      ${bucketColumn}                                                  AS hour,
+      countMerge(call_count)                                           AS session_count,
+      sumMerge(input_tokens_sum) + sumMerge(output_tokens_sum)         AS token_count,
+      avgMerge(latency_avg)                                            AS avg_latency_ms
     FROM obs_llm_hourly
     FINAL
     WHERE tenant_id = {tenantId: String}
-      AND hour >= toStartOfHour(now() - INTERVAL {hours: UInt32} HOUR)
+      AND hour >= ${bucketStart}
     GROUP BY hour
-    ORDER BY hour ASC`,
+    ORDER BY hour ASC
+      WITH FILL
+      FROM ${bucketStart}
+      TO   ${bucketEnd} + ${step}
+      STEP ${step}`,
     { tenantId, hours },
   )
   return rows.map(r => ({
     hour:          r.hour,
-    sessionCount:  Number(r.session_count),
-    tokenCount:    Number(r.token_count),
-    avgLatencyMs:  Number(r.avg_latency_ms),
+    sessionCount:  Number(r.session_count) || 0,
+    tokenCount:    Number(r.token_count) || 0,
+    avgLatencyMs:  Number(r.avg_latency_ms) || 0,
   }))
 }

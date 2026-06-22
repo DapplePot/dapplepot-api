@@ -283,7 +283,7 @@ export async function getAgentProfile(
   )
   if (!agg) return null
 
-  const [breakdownRows, sessionRows] = await Promise.all([
+  const [breakdownRows, sessionRows, historyRows] = await Promise.all([
     queryRows<any>(
       `SELECT owasp_signal_id, framework,
               fired_count, sessions_affected, last_seen_at
@@ -299,6 +299,48 @@ export async function getAgentProfile(
          AND scored_at >= NOW() - INTERVAL '24 hours'
        ORDER BY scored_at DESC
        LIMIT 24`,
+      [agentId, tenantId],
+    ),
+    // Time-bucketed 24h score history (hourly): zero-fills idle hours for
+    // llm/asi (semantically "no risky activity"); trust uses LOCF — carries
+    // forward the last known trust score so an idle hour doesn't look like
+    // "totally untrusted".
+    queryRows<any>(
+      `WITH buckets AS (
+         SELECT generate_series(
+           date_trunc('hour', NOW() - INTERVAL '24 hours'),
+           date_trunc('hour', NOW()),
+           INTERVAL '1 hour'
+         ) AS hour
+       ),
+       bucket_scores AS (
+         SELECT
+           b.hour,
+           AVG(srs.llm_score)   AS llm_score,
+           AVG(srs.asi_score)   AS asi_score,
+           AVG(srs.trust_score) AS trust_score
+         FROM buckets b
+         LEFT JOIN session_risk_scores srs
+           ON srs.agent_id  = $1
+          AND srs.tenant_id = $2
+          AND date_trunc('hour', srs.scored_at) = b.hour
+         GROUP BY b.hour
+       )
+       SELECT
+         bs.hour,
+         COALESCE(bs.llm_score, 0) AS llm_score,
+         COALESCE(bs.asi_score, 0) AS asi_score,
+         COALESCE(
+           bs.trust_score,
+           (SELECT srs.trust_score FROM session_risk_scores srs
+            WHERE srs.agent_id  = $1
+              AND srs.tenant_id = $2
+              AND srs.scored_at < bs.hour
+              AND srs.trust_score IS NOT NULL
+            ORDER BY srs.scored_at DESC LIMIT 1)
+         ) AS trust_score
+       FROM bucket_scores bs
+       ORDER BY bs.hour ASC`,
       [agentId, tenantId],
     ),
   ])
@@ -321,6 +363,13 @@ export async function getAgentProfile(
     scoredAt:   new Date(r.scored_at).toISOString(),
   }))
 
+  const scoreHistory = historyRows.map(r => ({
+    hour:       new Date(r.hour).toISOString(),
+    llmScore:   Math.round(Number(r.llm_score) || 0),
+    asiScore:   Math.round(Number(r.asi_score) || 0),
+    trustScore: r.trust_score != null ? Math.round(Number(r.trust_score)) : null,
+  }))
+
   return {
     agentId,
     name:          agg.name           ?? null,
@@ -337,6 +386,7 @@ export async function getAgentProfile(
     lastScoredAt:  agg.last_scored_at ? new Date(agg.last_scored_at).toISOString() : null,
     signalBreakdown,
     recentSessions,
+    scoreHistory,
   }
 }
 
