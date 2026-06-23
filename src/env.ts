@@ -38,6 +38,10 @@ const envSchema = z.object({
   CACHE_TTL_SECURITY_OVERVIEW: z.coerce.number().default(120),
   CACHE_TTL_SESSION_SCORE: z.coerce.number().default(300),
   CACHE_TTL_REMEDIATION: z.coerce.number().default(300),
+  GCS_BUCKET: z.string().default('dapplepot-blogs'),
+  GCS_PROJECT_ID: z.string().optional(),
+  GCS_CLIENT_EMAIL: z.string().optional(),
+  GCS_PRIVATE_KEY: z.string().optional(),
 })
 
 function parseEnv() {
