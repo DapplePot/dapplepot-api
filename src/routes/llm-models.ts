@@ -13,8 +13,8 @@ llmModelsRouter.get('/', jwtAuth, requireRole('viewer'), async (c) => {
   return c.json(models)
 })
 
-// POST /v1/llm-models — admin only
-llmModelsRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
+// POST /v1/llm-models — editor+
+llmModelsRouter.post('/', jwtAuth, requireRole('editor'), async (c) => {
   const body = await c.req.json().catch(() => ({}))
 
   const parsed = z.object({

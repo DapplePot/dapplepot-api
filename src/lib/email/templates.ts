@@ -98,6 +98,50 @@ export function resetEmail(params: {
     }
 }
 
+export function verifyEmailEmail(params: {
+    appUrl: string
+    token: string
+    userName: string
+}): EmailMessage {
+    const link = `${params.appUrl}/verify-email?token=${params.token}`
+    const text = [
+        `Hi ${params.userName},`,
+        ``,
+        `Welcome to DapplePot! Please verify your email to start using the platform.`,
+        ``,
+        `Verify your email here:`,
+        link,
+        ``,
+        `This link expires in 24 hours.`,
+        `If you did not sign up for DapplePot, you can safely ignore this email.`,
+    ].join('\n')
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
+  <h2>Verify your email</h2>
+  <p>Hi ${escapeHtml(params.userName)},</p>
+  <p>Welcome to DapplePot! Click the button below to verify your email and start using the platform.</p>
+  <p style="margin:32px 0">
+    <a href="${link}"
+       style="background:#6366f1;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600">
+      Verify Email
+    </a>
+  </p>
+  <p style="color:#888;font-size:13px">This link expires in 24 hours.</p>
+  <p style="color:#888;font-size:13px">If you did not sign up for DapplePot, you can safely ignore this email.</p>
+</body>
+</html>`
+
+    return {
+        to: '',
+        subject: 'Verify your DapplePot email',
+        html,
+        text,
+    }
+}
+
 export function securityAlertEmail(params: {
     alert: Record<string, any>
     appUrl: string

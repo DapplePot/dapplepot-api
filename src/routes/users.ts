@@ -4,7 +4,7 @@ const { compare, hash: bcryptHash } = bcrypt
 import { randomBytes } from 'crypto'
 import { z } from 'zod'
 import { jwtAuth } from '../middleware/auth.js'
-import { requireRole } from '../middleware/authorize.js'
+import { requireRole, requireOrganizationTenant } from '../middleware/authorize.js'
 import {
     listUsers,
     findUserById,
@@ -12,6 +12,7 @@ import {
     updateUserRole,
     updateUserStatus,
     updateUserProfile,
+    LastAdminError,
 } from '../queries/users.pg.js'
 import {
     createInvite,
@@ -26,6 +27,7 @@ import { emailProvider } from '../lib/email/index.js'
 import { inviteEmail } from '../lib/email/templates.js'
 import { hashToken } from '../lib/auth-tokens.js'
 import { env } from '../env.js'
+import { listTenantsForUser, getMembership } from '../queries/tenant-members.pg.js'
 
 type Variables = { tenantId: string; userId: string; role: string }
 
@@ -46,6 +48,13 @@ usersRouter.get('/', requireRole('admin'), async (c) => {
         data: users,
         pagination: { page, limit, total, pages: Math.ceil(total / limit) },
     })
+})
+
+// GET /v1/users/me/tenants — workspaces this user is a member of
+usersRouter.get('/me/tenants', async (c) => {
+    const userId = c.get('userId') as string
+    const tenants = await listTenantsForUser(userId)
+    return c.json({ tenants })
 })
 
 // GET /v1/users/me — any authenticated user
@@ -101,15 +110,15 @@ usersRouter.put('/me', async (c) => {
     return c.json(updated)
 })
 
-// GET /v1/users/invites — admin only
-usersRouter.get('/invites', requireRole('admin'), async (c) => {
+// GET /v1/users/invites — admin only, organization tenants only
+usersRouter.get('/invites', requireRole('admin'), requireOrganizationTenant(), async (c) => {
     const tenantId = c.get('tenantId') as string
     const invites = await listInvites(tenantId)
     return c.json({ invites })
 })
 
-// POST /v1/users/invite — admin only
-usersRouter.post('/invite', requireRole('admin'), async (c) => {
+// POST /v1/users/invite — admin only, organization tenants only
+usersRouter.post('/invite', requireRole('admin'), requireOrganizationTenant(), async (c) => {
     const tenantId = c.get('tenantId') as string
     const userId = c.get('userId') as string
     const body = await c.req.json().catch(() => ({}))
@@ -123,10 +132,14 @@ usersRouter.post('/invite', requireRole('admin'), async (c) => {
 
     const { email, role } = parsed.data
 
-    // Check if active user already exists
+    // Reject if the email already maps to a user who is a member of this
+    // tenant — regardless of which workspace they're currently looking at.
     const existingUser = await findUserByEmailAnyTenant(email)
-    if (existingUser && existingUser.tenantId === tenantId) {
-        return c.json({ error: { code: 'EMAIL_EXISTS' } }, 409)
+    if (existingUser) {
+        const membership = await getMembership(existingUser.userId, tenantId)
+        if (membership) {
+            return c.json({ error: { code: 'EMAIL_EXISTS' } }, 409)
+        }
     }
 
     // Check if pending invite already exists
@@ -155,8 +168,8 @@ usersRouter.post('/invite', requireRole('admin'), async (c) => {
     return c.json(invite, 201)
 })
 
-// DELETE /v1/users/invites/:id — admin only
-usersRouter.delete('/invites/:id', requireRole('admin'), async (c) => {
+// DELETE /v1/users/invites/:id — admin only, organization tenants only
+usersRouter.delete('/invites/:id', requireRole('admin'), requireOrganizationTenant(), async (c) => {
     const tenantId = c.get('tenantId') as string
     const inviteId = c.req.param('id') as string
     const revoked = await revokeInvite(tenantId, inviteId)
@@ -180,10 +193,19 @@ usersRouter.put('/:id/role', requireRole('admin'), async (c) => {
         return c.json({ error: { code: 'VALIDATION_ERROR', message: parsed.error.message } }, 400)
     }
 
-    const updated = await updateUserRole(tenantId, targetUserId, parsed.data.role)
-    if (!updated) return c.json({ error: { code: 'NOT_FOUND' } }, 404)
-
-    return c.json(updated)
+    try {
+        const updated = await updateUserRole(tenantId, targetUserId, parsed.data.role)
+        if (!updated) return c.json({ error: { code: 'NOT_FOUND' } }, 404)
+        return c.json(updated)
+    } catch (err) {
+        if (err instanceof LastAdminError) {
+            return c.json(
+                { error: { code: 'LAST_ADMIN', message: 'Cannot demote the only remaining admin. Promote another user to admin first.' } },
+                409
+            )
+        }
+        throw err
+    }
 })
 
 // PUT /v1/users/:id/status — admin only

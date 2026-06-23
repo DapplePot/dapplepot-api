@@ -1,4 +1,4 @@
-import { queryRow, queryRows } from '../lib/postgres.js'
+import { queryRow, queryRows, sql } from '../lib/postgres.js'
 import type { UserSummary } from '../types/auth.js'
 
 type Role = 'superadmin' | 'admin' | 'editor' | 'viewer'
@@ -14,6 +14,7 @@ interface UserRow extends Record<string, unknown> {
     password_hash: string
     created_at: Date | string
     updated_at: Date | string
+    email_verified_at: Date | string | null
 }
 
 function toIso(d: Date | string): string {
@@ -29,6 +30,7 @@ function mapUser(r: UserRow): UserSummary & { passwordHash?: string } {
         role: r.role,
         status: r.status,
         createdAt: toIso(r.created_at),
+        emailVerifiedAt: r.email_verified_at ? toIso(r.email_verified_at) : null,
         passwordHash: r.password_hash,
     }
 }
@@ -38,7 +40,7 @@ export async function findUserByEmail(
     email: string
 ): Promise<(UserSummary & { passwordHash: string }) | undefined> {
     const row = await queryRow<UserRow>(
-        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at
+        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at, email_verified_at
          FROM users
          WHERE tenant_id = $1 AND LOWER(email) = LOWER($2)
          LIMIT 1`,
@@ -52,7 +54,7 @@ export async function findUserByEmailAnyTenant(
     email: string
 ): Promise<(UserSummary & { passwordHash: string }) | undefined> {
     const row = await queryRow<UserRow>(
-        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at
+        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at, email_verified_at
          FROM users
          WHERE LOWER(email) = LOWER($1)
          LIMIT 1`,
@@ -64,7 +66,7 @@ export async function findUserByEmailAnyTenant(
 
 export async function findUserById(userId: string): Promise<(UserSummary & { passwordHash: string }) | undefined> {
     const row = await queryRow<UserRow>(
-        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at
+        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at, email_verified_at
          FROM users WHERE user_id = $1`,
         [userId]
     )
@@ -72,6 +74,9 @@ export async function findUserById(userId: string): Promise<(UserSummary & { pas
     return mapUser(row) as UserSummary & { passwordHash: string }
 }
 
+// Lists every member of a tenant via tenant_members. The returned `role`
+// is the user's role in *this* tenant (m.role), and the returned `tenantId`
+// is this tenant — not the user's currently-active workspace.
 export async function listUsers(
     tenantId: string,
     page: number,
@@ -80,28 +85,34 @@ export async function listUsers(
 ): Promise<{ users: UserSummary[]; total: number }> {
     const offset = (page - 1) * limit
     const params: unknown[] = [tenantId, limit, offset]
-    let where = 'WHERE tenant_id = $1'
+    let where = 'WHERE m.tenant_id = $1'
     if (status) {
-        where += ` AND status = $${params.length + 1}`
+        where += ` AND u.status = $${params.length + 1}`
         params.push(status)
     }
 
     const rows = await queryRows<UserRow>(
-        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at
-         FROM users ${where}
-         ORDER BY created_at DESC
+        `SELECT u.user_id, m.tenant_id, u.email, u.name, m.role, u.status,
+                u.password_hash, u.created_at, u.updated_at, u.email_verified_at
+         FROM tenant_members m
+         JOIN users u ON u.user_id = m.user_id
+         ${where}
+         ORDER BY m.joined_at DESC
          LIMIT $2 OFFSET $3`,
         params
     )
 
     const countParams: unknown[] = [tenantId]
-    let countWhere = 'WHERE tenant_id = $1'
+    let countWhere = 'WHERE m.tenant_id = $1'
     if (status) {
-        countWhere += ` AND status = $2`
+        countWhere += ` AND u.status = $2`
         countParams.push(status)
     }
     const countRow = await queryRow<{ count: string }>(
-        `SELECT COUNT(*)::text AS count FROM users ${countWhere}`,
+        `SELECT COUNT(*)::text AS count
+         FROM tenant_members m
+         JOIN users u ON u.user_id = m.user_id
+         ${countWhere}`,
         countParams
     )
 
@@ -125,7 +136,7 @@ export async function createUser(params: {
     const row = await queryRow<UserRow>(
         `INSERT INTO users (tenant_id, email, name, password_hash, role, status)
          VALUES ($1, $2, $3, $4, $5, 'active')
-         RETURNING user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at`,
+         RETURNING user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at, email_verified_at`,
         [params.tenantId, params.email, params.name, params.passwordHash, params.role]
     )
     if (!row) throw new Error('Failed to create user')
@@ -134,21 +145,75 @@ export async function createUser(params: {
     return u as UserSummary
 }
 
+// Thrown when a role change would leave a tenant with zero admins.
+export class LastAdminError extends Error {
+    constructor() {
+        super('LAST_ADMIN')
+        this.name = 'LastAdminError'
+    }
+}
+
+// Changes the target user's role inside this tenant. Also syncs users.role
+// when the target's *active* workspace is this same tenant, so the next JWT
+// they get carries the new role. If they're currently looking at another
+// workspace, users.role is left alone — the new tenant_members.role takes
+// effect when they next switch into this tenant.
+//
+// Refuses to demote the last admin: every tenant must always have at least
+// one admin so it can never be left without anyone who can manage it.
 export async function updateUserRole(
     tenantId: string,
     userId: string,
     role: Role
 ): Promise<UserSummary | undefined> {
-    const row = await queryRow<UserRow>(
-        `UPDATE users SET role = $3, updated_at = now()
-         WHERE user_id = $1 AND tenant_id = $2
-         RETURNING user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at`,
-        [userId, tenantId, role]
-    )
-    if (!row) return undefined
-    const u = mapUser(row)
-    delete u.passwordHash
-    return u as UserSummary
+    return sql.begin(async (tx) => {
+        // Check the existing membership first.
+        const currentRows = await tx.unsafe<{ role: Role }[]>(
+            `SELECT role FROM tenant_members WHERE user_id = $1 AND tenant_id = $2 LIMIT 1`,
+            [userId, tenantId]
+        )
+        const current = currentRows[0]
+        if (!current) return undefined
+
+        // If we're demoting an admin, make sure they aren't the last one.
+        if (current.role === 'admin' && role !== 'admin') {
+            const adminCountRows = await tx.unsafe<{ count: string }[]>(
+                `SELECT COUNT(*)::text AS count FROM tenant_members
+                 WHERE tenant_id = $1 AND role = 'admin'`,
+                [tenantId]
+            )
+            const adminCount = parseInt(adminCountRows[0]?.count ?? '0', 10)
+            if (adminCount <= 1) {
+                throw new LastAdminError()
+            }
+        }
+
+        await tx.unsafe(
+            `UPDATE tenant_members SET role = $3
+             WHERE user_id = $1 AND tenant_id = $2`,
+            [userId, tenantId, role]
+        )
+
+        // Sync users.role only when their active workspace matches.
+        await tx.unsafe(
+            `UPDATE users SET role = $3, updated_at = now()
+             WHERE user_id = $1 AND tenant_id = $2`,
+            [userId, tenantId, role]
+        )
+
+        const userRows = await tx.unsafe<UserRow[]>(
+            `SELECT u.user_id, $2::uuid AS tenant_id, u.email, u.name,
+                    $3::text AS role, u.status, u.password_hash,
+                    u.created_at, u.updated_at, u.email_verified_at
+             FROM users u WHERE u.user_id = $1 LIMIT 1`,
+            [userId, tenantId, role]
+        )
+        const row = userRows[0]
+        if (!row) return undefined
+        const u = mapUser(row)
+        delete u.passwordHash
+        return u as UserSummary
+    })
 }
 
 export async function updateUserStatus(
@@ -159,7 +224,7 @@ export async function updateUserStatus(
     const row = await queryRow<UserRow>(
         `UPDATE users SET status = $3, updated_at = now()
          WHERE user_id = $1 AND tenant_id = $2
-         RETURNING user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at`,
+         RETURNING user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at, email_verified_at`,
         [userId, tenantId, status]
     )
     if (!row) return undefined
@@ -178,7 +243,7 @@ export async function updateUserProfile(
              password_hash = COALESCE($3, password_hash),
              updated_at    = now()
          WHERE user_id = $1
-         RETURNING user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at`,
+         RETURNING user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at, email_verified_at`,
         [userId, params.name ?? null, params.passwordHash ?? null]
     )
     if (!row) return undefined

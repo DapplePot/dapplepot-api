@@ -1,7 +1,7 @@
 import { Hono } from 'hono'
 import { z } from 'zod'
 import { jwtAuth } from '../middleware/auth.js'
-import { requireRole } from '../middleware/authorize.js'
+import { requireRole, requireOrganizationTenant } from '../middleware/authorize.js'
 import { rateLimitMiddleware } from '../middleware/ratelimit.js'
 import { listAuditArchives, getAuditArchive, findSealedArchiveForPeriod } from '../queries/audit.pg.js'
 import { sealMonthlyArchive, generateLiveReport, generateSessionReport } from '../lib/audit-generator.js'
@@ -15,6 +15,7 @@ export const auditRouter = new Hono<{ Variables: Variables }>()
 auditRouter.use('*', jwtAuth)
 auditRouter.use('*', rateLimitMiddleware)
 auditRouter.use('*', requireRole('admin'))
+auditRouter.use('*', requireOrganizationTenant())
 
 // GET /v1/audit/archives — list sealed monthly archives
 auditRouter.get('/archives', async (c) => {

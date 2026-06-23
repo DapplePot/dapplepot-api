@@ -18,6 +18,7 @@ export interface UserSummary {
     role: 'superadmin' | 'admin' | 'editor' | 'viewer'
     status: 'active' | 'disabled'
     createdAt: string
+    emailVerifiedAt: string | null
 }
 
 export interface InviteSummary {

@@ -7,7 +7,7 @@ export type Role = 'admin' | 'editor' | 'viewer' | 'superadmin'
 
 export interface AccessTokenPayload {
     sub: string
-    tenant_id: string
+    tenant_id: string | null
     user_id: string
     role: Role
     type: 'access'
@@ -19,7 +19,7 @@ const ACCESS_EXPIRES_IN_SECONDS = 15 * 60 // 15 minutes
 
 export function generateAccessToken(params: {
     userId: string
-    tenantId: string
+    tenantId: string | null
     role: Role
 }): string {
     const payload: Omit<AccessTokenPayload, 'iat' | 'exp'> = {

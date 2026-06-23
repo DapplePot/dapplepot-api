@@ -72,9 +72,8 @@ tenantsRouter.post('/onboard', jwtAuth, requireRole('superadmin'), async (c) => 
         return c.json(result, 201)
     } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : ''
-        // Postgres unique violation code 23505
         if (msg.includes('23505') || msg.includes('unique') || msg.toLowerCase().includes('duplicate')) {
-            return c.json({ error: 'A tenant with this name already exists' }, 409)
+            return c.json({ error: 'Conflict creating tenant' }, 409)
         }
         return c.json({ error: 'Internal server error' }, 500)
     }

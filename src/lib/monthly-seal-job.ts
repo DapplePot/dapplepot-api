@@ -1,9 +1,11 @@
 import { queryRows } from './postgres.js'
 import { sealMonthlyArchive } from './audit-generator.js'
 
+// Personal workspaces are single-user dev sandboxes — they don't get audit
+// archives, so the seal job skips them.
 async function getActiveTenantIds(): Promise<string[]> {
   const rows = await queryRows<{ tenant_id: string }>(
-    `SELECT tenant_id FROM tenants WHERE enabled = true`
+    `SELECT tenant_id FROM tenants WHERE enabled = true AND kind = 'organization'`
   )
   return rows.map(r => r.tenant_id)
 }

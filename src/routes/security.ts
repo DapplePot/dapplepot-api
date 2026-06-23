@@ -1,6 +1,7 @@
 import { Hono } from 'hono'
 import { env } from '../env.js'
 import { jwtAuth, sdkKeyAuth } from '../middleware/auth.js'
+import { requireRole } from '../middleware/authorize.js'
 import { rateLimitMiddleware } from '../middleware/ratelimit.js'
 import { queryRows, queryRow } from '../lib/postgres.js'
 import { redis } from '../lib/redis.js'
@@ -209,9 +210,9 @@ securityRouter.get('/agents/:id/alert-config', async (c) => {
 //   { tool_manifest: string[] }                               — allowed tool names for agent
 //   { max_tool_calls_per_session: number | null }             — hard cap (null = remove)
 // Invalidates Redis config cache after write.
-securityRouter.put('/agents/:id/alert-config', async (c) => {
+securityRouter.put('/agents/:id/alert-config', requireRole('editor'), async (c) => {
   const tenantId = c.get('tenantId')
-  const agentId  = c.req.param('id')
+  const agentId  = c.req.param('id') as string
 
   let body: {
     composite_threshold?:         number
@@ -393,11 +394,10 @@ securityRouter.put('/agents/:id/alert-config', async (c) => {
 // PUT /v1/security/agents/:id/subcheck-config
 // Body: { subCheckId: string, online_detection: boolean, action?: OnlineAction }
 // Upserts one sub-check override (online toggle + action) and invalidates the Redis config cache.
-// action defaults to "alert" when omitted.
-// jwtAuth is already applied router-wide above — no extra role restriction needed.
-securityRouter.put('/agents/:id/subcheck-config', async (c) => {
+// action defaults to "alert" when omitted. Editor+ only — viewers can read this config but not change it.
+securityRouter.put('/agents/:id/subcheck-config', requireRole('editor'), async (c) => {
   const tenantId = c.get('tenantId')
-  const agentId  = c.req.param('id')
+  const agentId  = c.req.param('id') as string
 
   let body: { subCheckId: string; online_detection: boolean; action?: string }
   try {

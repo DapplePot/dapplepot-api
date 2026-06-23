@@ -26,8 +26,8 @@ toolsRouter.get('/', jwtAuth, requireRole('viewer'), async (c) => {
   return c.json(tools)
 })
 
-// POST /v1/tools — admin only
-toolsRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
+// POST /v1/tools — editor+
+toolsRouter.post('/', jwtAuth, requireRole('editor'), async (c) => {
   const body = await c.req.json().catch(() => ({}))
 
   const parsed = z.object({
@@ -66,8 +66,8 @@ toolsRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
   }
 })
 
-// PATCH /v1/tools/:id — admin only (update description, schema, mcp_server_id)
-toolsRouter.patch('/:id', jwtAuth, requireRole('admin'), async (c) => {
+// PATCH /v1/tools/:id — editor+ (update description, schema, mcp_server_id)
+toolsRouter.patch('/:id', jwtAuth, requireRole('editor'), async (c) => {
   const tenantId = c.get('tenantId')
   const toolId   = c.req.param('id')
   const body     = await c.req.json().catch(() => ({}))
@@ -102,8 +102,8 @@ toolsRouter.patch('/:id', jwtAuth, requireRole('admin'), async (c) => {
   }
 })
 
-// DELETE /v1/tools/:id — admin only
-toolsRouter.delete('/:id', jwtAuth, requireRole('admin'), async (c) => {
+// DELETE /v1/tools/:id — editor+
+toolsRouter.delete('/:id', jwtAuth, requireRole('editor'), async (c) => {
   const tenantId = c.get('tenantId')
   const toolId   = c.req.param('id')
   try {

@@ -25,8 +25,8 @@ agentsRouter.get('/', jwtAuth, requireRole('viewer'), async (c) => {
     return c.json(agents)
 })
 
-// POST /v1/agents — admin only
-agentsRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
+// POST /v1/agents — editor+
+agentsRouter.post('/', jwtAuth, requireRole('editor'), async (c) => {
     let body: unknown
     try {
         body = await c.req.json()
@@ -59,8 +59,8 @@ agentsRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
     }
 })
 
-// PATCH /v1/agents/:id — admin only
-agentsRouter.patch('/:id', jwtAuth, requireRole('admin'), async (c) => {
+// PATCH /v1/agents/:id — editor+
+agentsRouter.patch('/:id', jwtAuth, requireRole('editor'), async (c) => {
     const tenantId = c.get('tenantId')
     const agentId  = c.req.param('id')
 
@@ -86,8 +86,8 @@ agentsRouter.patch('/:id', jwtAuth, requireRole('admin'), async (c) => {
     return c.json(agent)
 })
 
-// DELETE /v1/agents/:id — admin only
-agentsRouter.delete('/:id', jwtAuth, requireRole('admin'), async (c) => {
+// DELETE /v1/agents/:id — editor+
+agentsRouter.delete('/:id', jwtAuth, requireRole('editor'), async (c) => {
     const tenantId = c.get('tenantId')
     const agentId  = c.req.param('id')
     await deleteAgent(tenantId, agentId)
@@ -102,8 +102,8 @@ agentsRouter.get('/:id/llm-models', jwtAuth, requireRole('viewer'), async (c) =>
     return c.json(models)
 })
 
-// PUT /v1/agents/:id/llm-models — admin only
-agentsRouter.put('/:id/llm-models', jwtAuth, requireRole('admin'), async (c) => {
+// PUT /v1/agents/:id/llm-models — editor+
+agentsRouter.put('/:id/llm-models', jwtAuth, requireRole('editor'), async (c) => {
     const tenantId = c.get('tenantId')
     const agentId  = c.req.param('id')
     const body     = await c.req.json().catch(() => ({}))
@@ -129,8 +129,8 @@ agentsRouter.get('/:id/connected-agents', jwtAuth, requireRole('viewer'), async 
     return c.json(agents)
 })
 
-// PUT /v1/agents/:id/connected-agents — admin only
-agentsRouter.put('/:id/connected-agents', jwtAuth, requireRole('admin'), async (c) => {
+// PUT /v1/agents/:id/connected-agents — editor+
+agentsRouter.put('/:id/connected-agents', jwtAuth, requireRole('editor'), async (c) => {
     const tenantId = c.get('tenantId')
     const agentId  = c.req.param('id')
     const body     = await c.req.json().catch(() => ({}))

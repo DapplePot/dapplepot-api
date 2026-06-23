@@ -12,8 +12,8 @@ mcpServersRouter.get('/', jwtAuth, requireRole('viewer'), async (c) => {
   return c.json(await listMcpServers(tenantId))
 })
 
-// POST /v1/mcp-servers — admin only
-mcpServersRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
+// POST /v1/mcp-servers — editor+
+mcpServersRouter.post('/', jwtAuth, requireRole('editor'), async (c) => {
   const body = await c.req.json().catch(() => ({}))
 
   const parsed = z.object({
@@ -45,8 +45,8 @@ mcpServersRouter.post('/', jwtAuth, requireRole('admin'), async (c) => {
   }
 })
 
-// PATCH /v1/mcp-servers/:id — admin only
-mcpServersRouter.patch('/:id', jwtAuth, requireRole('admin'), async (c) => {
+// PATCH /v1/mcp-servers/:id — editor+
+mcpServersRouter.patch('/:id', jwtAuth, requireRole('editor'), async (c) => {
   const tenantId = c.get('tenantId')
   const serverId = c.req.param('id')
   const body     = await c.req.json().catch(() => ({}))
@@ -76,8 +76,8 @@ mcpServersRouter.patch('/:id', jwtAuth, requireRole('admin'), async (c) => {
   }
 })
 
-// DELETE /v1/mcp-servers/:id — admin only
-mcpServersRouter.delete('/:id', jwtAuth, requireRole('admin'), async (c) => {
+// DELETE /v1/mcp-servers/:id — editor+
+mcpServersRouter.delete('/:id', jwtAuth, requireRole('editor'), async (c) => {
   const tenantId = c.get('tenantId')
   const serverId = c.req.param('id')
 
