@@ -38,15 +38,15 @@ export async function getAlertList(
       a.payload->>'title'     AS title,
       a.payload->>'message'   AS message,
       a.payload->>'rule_type' AS rule_type,
-      s.agent_id,
+      COALESCE(s.agent_id, NULLIF(a.payload->>'agent_id', '')::uuid) AS agent_id,
       ag.name                 AS agent_name
     FROM alerts a
     LEFT JOIN sessions s ON s.session_id = a.session_id
-    LEFT JOIN agents ag ON ag.agent_id = s.agent_id
+    LEFT JOIN agents ag ON ag.agent_id = COALESCE(s.agent_id, NULLIF(a.payload->>'agent_id', '')::uuid)
     WHERE a.tenant_id    = $1
       AND ($2::text        IS NULL OR a.severity = $2)
       AND ($3::text        IS NULL OR a.status   = $3)
-      AND ($4::uuid        IS NULL OR s.agent_id = $4)
+      AND ($4::uuid        IS NULL OR COALESCE(s.agent_id, NULLIF(a.payload->>'agent_id', '')::uuid) = $4)
       AND ($5::timestamptz IS NULL OR a.triggered_at >= $5)
       AND ($6::timestamptz IS NULL OR a.triggered_at <  $6)
     ORDER BY a.triggered_at DESC
@@ -70,7 +70,7 @@ export async function getAlertList(
     WHERE a.tenant_id    = $1
       AND ($2::text        IS NULL OR a.severity = $2)
       AND ($3::text        IS NULL OR a.status   = $3)
-      AND ($4::uuid        IS NULL OR s.agent_id = $4)
+      AND ($4::uuid        IS NULL OR COALESCE(s.agent_id, NULLIF(a.payload->>'agent_id', '')::uuid) = $4)
       AND ($5::timestamptz IS NULL OR a.triggered_at >= $5)
       AND ($6::timestamptz IS NULL OR a.triggered_at <  $6)`,
     [
@@ -97,11 +97,11 @@ export async function getAlertDetail(
       a.payload->>'title'     AS title,
       a.payload->>'message'   AS message,
       a.payload->>'rule_type' AS rule_type,
-      s.agent_id,
+      COALESCE(s.agent_id, NULLIF(a.payload->>'agent_id', '')::uuid) AS agent_id,
       ag.name                 AS agent_name
     FROM alerts a
     LEFT JOIN sessions s ON s.session_id = a.session_id
-    LEFT JOIN agents ag ON ag.agent_id = s.agent_id
+    LEFT JOIN agents ag ON ag.agent_id = COALESCE(s.agent_id, NULLIF(a.payload->>'agent_id', '')::uuid)
     WHERE a.alert_id  = $1
       AND a.tenant_id = $2`,
     [alertId, tenantId]
