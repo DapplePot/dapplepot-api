@@ -106,7 +106,7 @@ export async function listTenants(): Promise<TenantListItem[]> {
              LIMIT 1
            ) AS admin_user,
            (
-             SELECT COUNT(*) FROM users u WHERE u.tenant_id = t.tenant_id
+             SELECT COUNT(*) FROM tenant_members tm WHERE tm.tenant_id = t.tenant_id
            ) AS user_count
          FROM tenants t
          ORDER BY t.created_at DESC`
@@ -122,6 +122,131 @@ export async function listTenants(): Promise<TenantListItem[]> {
         adminUser: r.admin_user ?? null,
         userCount: parseInt(r.user_count, 10),
     }))
+}
+
+// Hard-deletes a tenant and every tenant-scoped row. Used by superadmin only.
+//
+// Most child tables (sdk_keys, agents, policy_rules, channels, mcp_servers,
+// tools, llm_models, tenant_members, …) declare ON DELETE CASCADE, so the
+// final DELETE on tenants takes care of them. A handful of tables were
+// declared without CASCADE — alerts, invites, sessions, audit_archives — and
+// the users table only has a plain FK (since its tenant_id is nullable for
+// superadmins). We clean those up explicitly first.
+//
+// Users get special handling: a single identity (one email) can belong to
+// multiple tenants via tenant_members. If a user belonged to *this* tenant
+// AND another one, we re-point their primary tenant pointer to that other
+// tenant instead of deleting the row. Users whose only home was this tenant
+// are deleted.
+//
+// Returns false if the tenant didn't exist.
+export async function deleteTenant(tenantId: string): Promise<boolean> {
+    return sql.begin(async (tx) => {
+        const existing = await tx.unsafe<{ tenant_id: string }[]>(
+            `SELECT tenant_id FROM tenants WHERE tenant_id = $1 LIMIT 1`,
+            [tenantId]
+        )
+        if (existing.length === 0) return false
+
+        // Re-point users who have membership in another tenant.
+        await tx.unsafe(
+            `UPDATE users u
+             SET tenant_id = (
+                   SELECT tm.tenant_id
+                   FROM tenant_members tm
+                   WHERE tm.user_id = u.user_id AND tm.tenant_id <> $1
+                   ORDER BY tm.joined_at ASC
+                   LIMIT 1
+                 ),
+                 role = (
+                   SELECT tm.role
+                   FROM tenant_members tm
+                   WHERE tm.user_id = u.user_id AND tm.tenant_id <> $1
+                   ORDER BY tm.joined_at ASC
+                   LIMIT 1
+                 ),
+                 updated_at = now()
+             WHERE u.tenant_id = $1
+               AND EXISTS (
+                 SELECT 1 FROM tenant_members tm
+                 WHERE tm.user_id = u.user_id AND tm.tenant_id <> $1
+               )`,
+            [tenantId]
+        )
+
+        // Delete users that lived only in this tenant.
+        await tx.unsafe(`DELETE FROM users WHERE tenant_id = $1`, [tenantId])
+
+        // Non-cascading tenant-scoped rows.
+        await tx.unsafe(`DELETE FROM alerts         WHERE tenant_id = $1`, [tenantId])
+        await tx.unsafe(`DELETE FROM invites        WHERE tenant_id = $1`, [tenantId])
+        await tx.unsafe(`DELETE FROM sessions       WHERE tenant_id = $1`, [tenantId])
+        await tx.unsafe(`DELETE FROM audit_archives WHERE tenant_id = $1`, [tenantId])
+
+        // The cascades handle everything else.
+        await tx.unsafe(`DELETE FROM tenants WHERE tenant_id = $1`, [tenantId])
+        return true
+    })
+}
+
+export interface TenantGrowthPoint {
+    month:        string  // 'YYYY-MM'
+    total:        number
+    organization: number
+    personal:     number
+}
+
+interface GrowthRow extends Record<string, unknown> {
+    month:     string
+    kind:      'personal' | 'organization'
+    new_count: string  // COUNT() → bigint → string
+}
+
+// Returns monthly cumulative tenant counts from the first tenant's month
+// through the current month, split by kind. Empty months are filled forward
+// so the line chart is continuous.
+export async function getTenantGrowth(): Promise<TenantGrowthPoint[]> {
+    const rows = await queryRows<GrowthRow>(
+        `SELECT
+           to_char(date_trunc('month', created_at), 'YYYY-MM') AS month,
+           kind,
+           COUNT(*) AS new_count
+         FROM tenants
+         GROUP BY 1, 2
+         ORDER BY 1`
+    )
+    if (rows.length === 0) return []
+
+    const newByMonth = new Map<string, { organization: number; personal: number }>()
+    for (const r of rows) {
+        const slot = newByMonth.get(r.month) ?? { organization: 0, personal: 0 }
+        slot[r.kind] += parseInt(r.new_count, 10)
+        newByMonth.set(r.month, slot)
+    }
+
+    const firstMonth = rows[0]!.month
+    const now = new Date()
+    const lastMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`
+
+    const months: string[] = []
+    let [y, m] = firstMonth.split('-').map(Number) as [number, number]
+    const [yEnd, mEnd] = lastMonth.split('-').map(Number) as [number, number]
+    while (y < yEnd || (y === yEnd && m <= mEnd)) {
+        months.push(`${y}-${String(m).padStart(2, '0')}`)
+        m += 1
+        if (m > 12) { m = 1; y += 1 }
+    }
+
+    let org = 0
+    let pers = 0
+    return months.map((mo) => {
+        const slot = newByMonth.get(mo)
+        if (slot) {
+            org += slot.organization
+            pers += slot.personal
+        }
+        return { month: mo, organization: org, personal: pers, total: org + pers }
+    })
 }
 
 export interface OnboardResult {

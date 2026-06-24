@@ -7,11 +7,14 @@ import { jwtAuth } from '../middleware/auth.js'
 import { requireRole, requireOrganizationTenant } from '../middleware/authorize.js'
 import {
     listUsers,
+    listAllUsers,
+    getUserGrowth,
     findUserById,
     findUserByEmailAnyTenant,
     updateUserRole,
     updateUserStatus,
     updateUserProfile,
+    deleteUserById,
     LastAdminError,
 } from '../queries/users.pg.js'
 import {
@@ -48,6 +51,20 @@ usersRouter.get('/', requireRole('admin'), async (c) => {
         data: users,
         pagination: { page, limit, total, pages: Math.ceil(total / limit) },
     })
+})
+
+// GET /v1/users/all — superadmin only. System-wide users list with
+// every workspace membership attached.
+usersRouter.get('/all', requireRole('superadmin'), async (c) => {
+    const users = await listAllUsers()
+    return c.json(users)
+})
+
+// GET /v1/users/stats/growth — superadmin only. Monthly cumulative user
+// counts split by signup_source.
+usersRouter.get('/stats/growth', requireRole('superadmin'), async (c) => {
+    const points = await getUserGrowth()
+    return c.json(points)
 })
 
 // GET /v1/users/me/tenants — workspaces this user is a member of
@@ -175,6 +192,33 @@ usersRouter.delete('/invites/:id', requireRole('admin'), requireOrganizationTena
     const revoked = await revokeInvite(tenantId, inviteId)
     if (!revoked) return c.json({ error: { code: 'NOT_FOUND' } }, 404)
     return c.json({ ok: true })
+})
+
+// DELETE /v1/users/:id — superadmin only. Hard-deletes the user, their
+// personal workspace(s), and every tenant_members / refresh_token / etc.
+// row that ties back to them.
+usersRouter.delete('/:id', requireRole('superadmin'), async (c) => {
+    const requestingUserId = c.get('userId') as string
+    const targetUserId     = c.req.param('id') as string
+
+    if (targetUserId === requestingUserId) {
+        return c.json({ error: { code: 'FORBIDDEN', message: 'Cannot delete your own account' } }, 400)
+    }
+
+    const target = await findUserById(targetUserId)
+    if (!target) return c.json({ error: { code: 'NOT_FOUND' } }, 404)
+    if (target.role === 'superadmin') {
+        return c.json({ error: { code: 'FORBIDDEN', message: 'Superadmin accounts cannot be deleted' } }, 403)
+    }
+
+    try {
+        const ok = await deleteUserById(targetUserId)
+        if (!ok) return c.json({ error: { code: 'NOT_FOUND' } }, 404)
+        return c.body(null, 204)
+    } catch (err) {
+        const msg = err instanceof Error ? err.message : 'Internal server error'
+        return c.json({ error: { code: 'INTERNAL_ERROR', message: msg } }, 500)
+    }
 })
 
 // PUT /v1/users/:id/role — admin only

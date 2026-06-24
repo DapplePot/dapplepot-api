@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs'
 const { hash: bcryptHash } = bcrypt
 import { jwtAuth } from '../middleware/auth.js'
 import { requireRole } from '../middleware/authorize.js'
-import { getTenantById, listTenants, onboardTenant } from '../queries/tenants.pg.js'
+import { deleteTenant, getTenantById, getTenantGrowth, listTenants, onboardTenant } from '../queries/tenants.pg.js'
 
 export const tenantsRouter = new Hono()
 
@@ -19,6 +19,13 @@ const OnboardSchema = z.object({
         name: z.string().min(1, 'admin.name is required'),
         password: z.string().min(8, 'admin.password must be at least 8 characters'),
     }),
+})
+
+// GET /v1/tenants/stats/growth — superadmin only.
+// Declared before /:id so 'stats' is not interpreted as a tenant id.
+tenantsRouter.get('/stats/growth', jwtAuth, requireRole('superadmin'), async (c) => {
+    const points = await getTenantGrowth()
+    return c.json(points)
 })
 
 // GET /v1/tenants/:id — superadmin or the tenant's own users
@@ -40,6 +47,27 @@ tenantsRouter.get('/:id', jwtAuth, async (c) => {
 tenantsRouter.get('/', jwtAuth, requireRole('superadmin'), async (c) => {
     const tenants = await listTenants()
     return c.json(tenants)
+})
+
+// DELETE /v1/tenants/:id — superadmin only. Hard-deletes the tenant and all
+// tenant-scoped data. Superadmins cannot delete their own active tenant (they
+// have tenant_id = NULL anyway, so this is mostly a belt-and-suspenders check
+// for org admins whose tokens get elevated in tests).
+tenantsRouter.delete('/:id', jwtAuth, requireRole('superadmin'), async (c) => {
+    const id = c.req.param('id')
+    const callerTenantId = c.get('tenantId')
+    if (callerTenantId === id) {
+        return c.json({ error: 'Cannot delete your own active tenant' }, 400)
+    }
+
+    try {
+        const ok = await deleteTenant(id)
+        if (!ok) return c.json({ error: 'Tenant not found' }, 404)
+        return c.body(null, 204)
+    } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : ''
+        return c.json({ error: msg || 'Internal server error' }, 500)
+    }
 })
 
 tenantsRouter.post('/onboard', jwtAuth, requireRole('superadmin'), async (c) => {

@@ -126,6 +126,186 @@ export async function listUsers(
     }
 }
 
+export interface UserGrowthPoint {
+    month:        string  // 'YYYY-MM'
+    total:        number
+    self:         number  // personal workspaces / self-signups
+    organization: number  // invited or onboarded into an org
+}
+
+interface UserGrowthRow extends Record<string, unknown> {
+    month:     string
+    bucket:    'self' | 'organization'
+    new_count: string
+}
+
+// Monthly cumulative user counts, split by how the account was created:
+// `self` covers self-signup (personal-workspace owners), `organization`
+// covers invited or superadmin-onboarded accounts (NULL signup_source —
+// pre-personal-tenant data — falls into `organization`).
+export async function getUserGrowth(): Promise<UserGrowthPoint[]> {
+    const rows = await queryRows<UserGrowthRow>(
+        `SELECT
+           to_char(date_trunc('month', created_at), 'YYYY-MM') AS month,
+           CASE
+             WHEN signup_source = 'self_signup' THEN 'self'
+             ELSE 'organization'
+           END AS bucket,
+           COUNT(*) AS new_count
+         FROM users
+         GROUP BY 1, 2
+         ORDER BY 1`
+    )
+    if (rows.length === 0) return []
+
+    const newByMonth = new Map<string, { self: number; organization: number }>()
+    for (const r of rows) {
+        const slot = newByMonth.get(r.month) ?? { self: 0, organization: 0 }
+        slot[r.bucket] += parseInt(r.new_count, 10)
+        newByMonth.set(r.month, slot)
+    }
+
+    const firstMonth = rows[0]!.month
+    const now = new Date()
+    const lastMonth = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}`
+
+    const months: string[] = []
+    let [y, m] = firstMonth.split('-').map(Number) as [number, number]
+    const [yEnd, mEnd] = lastMonth.split('-').map(Number) as [number, number]
+    while (y < yEnd || (y === yEnd && m <= mEnd)) {
+        months.push(`${y}-${String(m).padStart(2, '0')}`)
+        m += 1
+        if (m > 12) { m = 1; y += 1 }
+    }
+
+    let self = 0
+    let org = 0
+    return months.map((mo) => {
+        const slot = newByMonth.get(mo)
+        if (slot) {
+            self += slot.self
+            org += slot.organization
+        }
+        return { month: mo, self, organization: org, total: self + org }
+    })
+}
+
+export interface UserMembership {
+    tenantId:   string
+    tenantName: string
+    role:       'admin' | 'editor' | 'viewer'
+}
+
+export interface UserWithMemberships {
+    userId:           string
+    email:            string
+    name:             string
+    role:             Role
+    status:           Status
+    createdAt:        string
+    emailVerifiedAt:  string | null
+    activeTenantId:   string | null
+    activeTenantName: string | null
+    memberships:      UserMembership[]
+}
+
+interface UserWithMembershipsRow extends Record<string, unknown> {
+    user_id:            string
+    email:              string
+    name:               string
+    role:               Role
+    status:             Status
+    created_at:         Date | string
+    email_verified_at:  Date | string | null
+    active_tenant_id:   string | null
+    active_tenant_name: string | null
+    memberships:        UserMembership[]
+}
+
+// Superadmin-only system-wide users listing. Each row carries every workspace
+// the user is a member of (via tenant_members), plus their currently-active
+// workspace pointer for display.
+export async function listAllUsers(): Promise<UserWithMemberships[]> {
+    const rows = await queryRows<UserWithMembershipsRow>(
+        `SELECT
+           u.user_id,
+           u.email,
+           u.name,
+           u.role,
+           u.status,
+           u.created_at,
+           u.email_verified_at,
+           u.tenant_id AS active_tenant_id,
+           at.name     AS active_tenant_name,
+           COALESCE(m.memberships, '[]'::json) AS memberships
+         FROM users u
+         LEFT JOIN tenants at ON at.tenant_id = u.tenant_id
+         LEFT JOIN LATERAL (
+           SELECT json_agg(json_build_object(
+             'tenantId',   tm.tenant_id,
+             'tenantName', t.name,
+             'role',       tm.role
+           ) ORDER BY tm.joined_at ASC) AS memberships
+           FROM tenant_members tm
+           JOIN tenants t ON t.tenant_id = tm.tenant_id
+           WHERE tm.user_id = u.user_id
+         ) m ON TRUE
+         ORDER BY u.created_at DESC`
+    )
+    return rows.map((r) => ({
+        userId:           r.user_id,
+        email:            r.email,
+        name:             r.name,
+        role:             r.role,
+        status:           r.status,
+        createdAt:        toIso(r.created_at),
+        emailVerifiedAt:  r.email_verified_at ? toIso(r.email_verified_at) : null,
+        activeTenantId:   r.active_tenant_id,
+        activeTenantName: r.active_tenant_name,
+        memberships:      r.memberships ?? [],
+    }))
+}
+
+// Hard-deletes a user and every reference that would block the delete.
+// Personal tenants owned by the user are deleted with their tenant-scoped
+// data. Outstanding invites issued by the user, refresh tokens, and password
+// reset rows are wiped. tenant_members and email_verifications cascade on
+// user delete, so no manual cleanup there.
+//
+// Returns false if the user didn't exist.
+export async function deleteUserById(userId: string): Promise<boolean> {
+    return sql.begin(async (tx) => {
+        const existing = await tx.unsafe<{ user_id: string }[]>(
+            `SELECT user_id FROM users WHERE user_id = $1 LIMIT 1`,
+            [userId]
+        )
+        if (existing.length === 0) return false
+
+        // Tear down personal tenants this user owns. Mirror deleteTenant()'s
+        // approach for the non-cascading child tables.
+        const personal = await tx.unsafe<{ tenant_id: string }[]>(
+            `SELECT tenant_id FROM tenants WHERE owner_user_id = $1 AND kind = 'personal'`,
+            [userId]
+        )
+        for (const t of personal) {
+            await tx.unsafe(`DELETE FROM alerts         WHERE tenant_id = $1`, [t.tenant_id])
+            await tx.unsafe(`DELETE FROM invites        WHERE tenant_id = $1`, [t.tenant_id])
+            await tx.unsafe(`DELETE FROM sessions       WHERE tenant_id = $1`, [t.tenant_id])
+            await tx.unsafe(`DELETE FROM audit_archives WHERE tenant_id = $1`, [t.tenant_id])
+            await tx.unsafe(`DELETE FROM tenants        WHERE tenant_id = $1`, [t.tenant_id])
+        }
+
+        // FKs without CASCADE that point at users.user_id
+        await tx.unsafe(`DELETE FROM invites         WHERE invited_by = $1`, [userId])
+        await tx.unsafe(`DELETE FROM password_resets WHERE user_id    = $1`, [userId])
+        await tx.unsafe(`DELETE FROM refresh_tokens  WHERE user_id    = $1`, [userId])
+
+        // tenant_members and email_verifications cascade on user delete.
+        await tx.unsafe(`DELETE FROM users WHERE user_id = $1`, [userId])
+        return true
+    })
+}
+
 export async function createUser(params: {
     tenantId: string
     email: string
