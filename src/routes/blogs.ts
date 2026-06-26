@@ -95,7 +95,13 @@ blogsRouter.post('/', jwtAuth, requireRole('superadmin'), async (c) => {
   const userId = c.get('userId') as string
 
   const blog = await createBlog({
-    ...parsed.data,
+    title: parsed.data.title,
+    slug: parsed.data.slug,
+    excerpt: parsed.data.excerpt,
+    contentMarkdown: parsed.data.contentMarkdown,
+    authors: parsed.data.authors,
+    tag: parsed.data.tag,
+    bannerImageUrl: parsed.data.bannerImageUrl,
     metaTitle: parsed.data.metaTitle ?? null,
     metaDescription: parsed.data.metaDescription ?? null,
     readTime,
@@ -131,7 +137,13 @@ blogsRouter.put('/:id', jwtAuth, requireRole('superadmin'), async (c) => {
   const userId = c.get('userId') as string
 
   const blog = await updateBlog(id, {
-    ...parsed.data,
+    title: parsed.data.title,
+    slug: parsed.data.slug,
+    excerpt: parsed.data.excerpt,
+    contentMarkdown: parsed.data.contentMarkdown,
+    authors: parsed.data.authors,
+    tag: parsed.data.tag,
+    bannerImageUrl: parsed.data.bannerImageUrl,
     metaTitle: parsed.data.metaTitle ?? null,
     metaDescription: parsed.data.metaDescription ?? null,
     readTime,
