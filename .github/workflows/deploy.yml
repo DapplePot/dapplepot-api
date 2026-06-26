@@ -57,8 +57,8 @@ jobs:
             --strict-host-key-checking=no \
             --command "
               set -e
-              echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin
-              docker compose -f /opt/dapplepot/docker-compose.yml pull api
-              docker compose -f /opt/dapplepot/docker-compose.yml up -d --no-deps api
-              docker image prune -f
+              echo '${{ secrets.GITHUB_TOKEN }}' | sudo docker login ghcr.io -u '${{ github.actor }}' --password-stdin
+              sudo docker compose -f /opt/dapplepot/docker-compose.yml pull api
+              sudo docker compose -f /opt/dapplepot/docker-compose.yml up -d --no-deps api
+              sudo docker image prune -f
             "
