@@ -1,6 +1,8 @@
 import { Hono } from 'hono'
 import { streamSSE } from 'hono/streaming'
 import { jwtAuth } from '../middleware/auth.js'
+import { requireWritableTenant } from '../middleware/requireWritableTenant.js'
+import { requireOnboardingComplete } from '../middleware/requireOnboardingComplete.js'
 import { rateLimitMiddleware } from '../middleware/ratelimit.js'
 import { getSessionList, getSessionPg, getLiveSessions, getSessionAlerts } from '../queries/sessions.pg.js'
 import { getTracePage, getStateHistory } from '../queries/sessions.ch.js'
@@ -12,6 +14,8 @@ type Variables = { tenantId: string; userId: string }
 export const sessionsRouter = new Hono<{ Variables: Variables }>()
 
 sessionsRouter.use('*', jwtAuth)
+sessionsRouter.use('*', requireOnboardingComplete)
+sessionsRouter.use('*', requireWritableTenant)
 sessionsRouter.use('*', rateLimitMiddleware)
 
 sessionsRouter.get('/live', async (c) => {

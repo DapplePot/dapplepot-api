@@ -42,6 +42,19 @@ const envSchema = z.object({
   GCS_PROJECT_ID: z.string().optional(),
   GCS_CLIENT_EMAIL: z.string().optional(),
   GCS_PRIVATE_KEY: z.string().optional(),
+  // ── Lemon Squeezy (Phase 8) ─────────────────────────────────────────────
+  // All LS vars are optional so the app boots in dev without LS configured.
+  // Routes that need them check at request time and return a 503 if missing.
+  // Get values from https://app.lemonsqueezy.com/settings/api after creating
+  // your store. Variant IDs are numeric strings ("123456") from each product
+  // page (Products → Variants tab).
+  LEMONSQUEEZY_API_KEY:               z.string().optional(),
+  LEMONSQUEEZY_STORE_ID:              z.string().optional(),
+  LEMONSQUEEZY_WEBHOOK_SECRET:        z.string().optional(),
+  LEMONSQUEEZY_VARIANT_PRO_MONTHLY:   z.string().optional(),
+  LEMONSQUEEZY_VARIANT_PRO_ANNUAL:    z.string().optional(),
+  LEMONSQUEEZY_VARIANT_TEAM_MONTHLY:  z.string().optional(),
+  LEMONSQUEEZY_VARIANT_TEAM_ANNUAL:   z.string().optional(),
 })
 
 function parseEnv() {

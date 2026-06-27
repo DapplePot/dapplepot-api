@@ -15,7 +15,11 @@ import {
     updateUserStatus,
     updateUserProfile,
     deleteUserById,
+    forceDeleteUserById,
+    removeUserFromTenant,
     LastAdminError,
+    OwnerRoleChangeError,
+    OwnerRemovalError,
 } from '../queries/users.pg.js'
 import {
     createInvite,
@@ -27,6 +31,7 @@ import {
     revokeAllRefreshTokensForUser,
 } from '../queries/refresh-tokens.pg.js'
 import { emailProvider } from '../lib/email/index.js'
+import { getTenantById } from '../queries/tenants.pg.js'
 import { inviteEmail } from '../lib/email/templates.js'
 import { hashToken } from '../lib/auth-tokens.js'
 import { env } from '../env.js'
@@ -171,12 +176,15 @@ usersRouter.post('/invite', requireRole('admin'), requireOrganizationTenant(), a
 
     const invite = await createInvite({ tenantId, email, role, invitedBy: userId as string, tokenHash, expiresAt })
 
-    // Get inviter name for email
-    const inviter = await findUserById(userId as string)
+    // Resolve inviter + workspace names for the email body.
+    const [inviter, tenant] = await Promise.all([
+        findUserById(userId as string),
+        getTenantById(tenantId),
+    ])
     const msg = inviteEmail({
         appUrl: env.DAPPLEPOT_APP_URL,
         token: rawToken,
-        tenantName: tenantId, // tenant name not stored in API; use ID as fallback
+        tenantName:  tenant?.name  ?? 'a DapplePot workspace',
         inviterName: inviter?.name || inviter?.email || 'A team member',
         role,
     })
@@ -216,6 +224,55 @@ usersRouter.delete('/:id', requireRole('superadmin'), async (c) => {
         if (!ok) return c.json({ error: { code: 'NOT_FOUND' } }, 404)
         return c.body(null, 204)
     } catch (err) {
+        if (err instanceof OwnerRemovalError) {
+            return c.json(
+                { error: { code: 'OWNER_REMOVAL_FORBIDDEN', message: 'This user owns one or more organisation workspaces. Transfer ownership or use force-delete.' } },
+                409
+            )
+        }
+        const msg = err instanceof Error ? err.message : 'Internal server error'
+        return c.json({ error: { code: 'INTERNAL_ERROR', message: msg } }, 500)
+    }
+})
+
+// ────────────────────────────────────────────────────────────────────────────
+// POST /v1/users/:id/force-delete — superadmin only.
+// Destructive: deletes the user AND every tenant they own (personal + org),
+// cascading through tenant-scoped data. Use for hard cleanup of test accounts
+// or GDPR-style removals where the owner pointer would otherwise block the
+// normal DELETE. Caller must send { acknowledged: true } in the body to
+// confirm they understand the blast radius.
+// ────────────────────────────────────────────────────────────────────────────
+usersRouter.post('/:id/force-delete', requireRole('superadmin'), async (c) => {
+    const requestingUserId = c.get('userId') as string
+    const targetUserId     = c.req.param('id') as string
+
+    if (targetUserId === requestingUserId) {
+        return c.json({ error: { code: 'FORBIDDEN', message: 'Cannot force-delete your own account' } }, 400)
+    }
+
+    const target = await findUserById(targetUserId)
+    if (!target) return c.json({ error: { code: 'NOT_FOUND' } }, 404)
+    if (target.role === 'superadmin') {
+        return c.json({ error: { code: 'FORBIDDEN', message: 'Superadmin accounts cannot be force-deleted' } }, 403)
+    }
+
+    const body = await c.req.json().catch(() => ({}))
+    const parsed = z.object({ acknowledged: z.literal(true) }).safeParse(body)
+    if (!parsed.success) {
+        return c.json({
+            error: {
+                code:    'CONFIRMATION_REQUIRED',
+                message: 'Force-delete requires { "acknowledged": true } to confirm the operation.',
+            },
+        }, 400)
+    }
+
+    try {
+        const result = await forceDeleteUserById(targetUserId)
+        if (!result) return c.json({ error: { code: 'NOT_FOUND' } }, 404)
+        return c.json(result, 200)
+    } catch (err) {
         const msg = err instanceof Error ? err.message : 'Internal server error'
         return c.json({ error: { code: 'INTERNAL_ERROR', message: msg } }, 500)
     }
@@ -248,6 +305,12 @@ usersRouter.put('/:id/role', requireRole('admin'), async (c) => {
                 409
             )
         }
+        if (err instanceof OwnerRoleChangeError) {
+            return c.json(
+                { error: { code: 'OWNER_ROLE_LOCKED', message: 'The workspace owner must remain an admin. Transfer ownership first to demote this user.' } },
+                409
+            )
+        }
         throw err
     }
 })
@@ -276,4 +339,43 @@ usersRouter.put('/:id/status', requireRole('admin'), async (c) => {
     }
 
     return c.json(updated)
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DELETE /v1/users/:id/membership — admin only.
+// Removes a user from THIS tenant's membership list. The user account stays
+// intact (other workspaces they belong to are unaffected). Used by Settings
+// → Users → "Remove from workspace". This is the non-destructive counterpart
+// to the superadmin DELETE /:id (which wipes the user globally).
+// ─────────────────────────────────────────────────────────────────────────────
+usersRouter.delete('/:id/membership', requireRole('admin'), requireOrganizationTenant(), async (c) => {
+    const tenantId         = c.get('tenantId')         as string
+    const requestingUserId = c.get('userId')           as string
+    const targetUserId     = c.req.param('id')         as string
+
+    if (targetUserId === requestingUserId) {
+        return c.json({
+            error: { code: 'FORBIDDEN', message: 'Cannot remove yourself from this workspace.' },
+        }, 400)
+    }
+
+    try {
+        const result = await removeUserFromTenant(tenantId, targetUserId)
+        if (!result.removed) return c.json({ error: { code: 'NOT_FOUND' } }, 404)
+        // Force them to re-login (their JWT may still reference this tenant).
+        await revokeAllRefreshTokensForUser(targetUserId)
+        return c.json(result, 200)
+    } catch (err) {
+        if (err instanceof OwnerRoleChangeError) {
+            return c.json({
+                error: { code: 'OWNER_ROLE_LOCKED', message: 'The workspace owner cannot be removed. Transfer ownership first.' },
+            }, 409)
+        }
+        if (err instanceof LastAdminError) {
+            return c.json({
+                error: { code: 'LAST_ADMIN', message: 'Cannot remove the only remaining admin. Promote another user to admin first.' },
+            }, 409)
+        }
+        throw err
+    }
 })

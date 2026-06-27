@@ -1,5 +1,7 @@
 import { Hono } from 'hono'
 import { jwtAuth } from '../middleware/auth.js'
+import { requireWritableTenant } from '../middleware/requireWritableTenant.js'
+import { requireOnboardingComplete } from '../middleware/requireOnboardingComplete.js'
 import { rateLimitMiddleware } from '../middleware/ratelimit.js'
 import {
   getAlertList,
@@ -15,6 +17,8 @@ type Variables = { tenantId: string; userId: string }
 export const alertsRouter = new Hono<{ Variables: Variables }>()
 
 alertsRouter.use('*', jwtAuth)
+alertsRouter.use('*', requireOnboardingComplete)
+alertsRouter.use('*', requireWritableTenant)
 alertsRouter.use('*', rateLimitMiddleware)
 
 alertsRouter.get('/stats', async (c) => {

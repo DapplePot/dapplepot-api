@@ -12,10 +12,21 @@
 import { Hono } from 'hono'
 import { randomUUID } from 'crypto'
 import { sdkKeyAuth } from '../middleware/auth.js'
+import { quotaCheck } from '../middleware/quotaCheck.js'
 import { redis } from '../lib/redis.js'
 import { upsertEvent, type NormalizedEvent } from '../lib/session-writer.js'
 import { appendEvents } from '../lib/event-appender.js'
 import { forwardToSecurity } from '../lib/security-client.js'
+import { incrementUsage } from '../lib/usageTracker.js'
+
+/** Event types metered against the customer's billing quota.
+ *  Mirrors pricing_strategy.md §3 "Billed Event Definition". */
+const BILLED_EVENT_TYPES = new Set([
+  'llm_start',
+  'llm_end',
+  'tool_start',
+  'tool_end',
+])
 
 type Variables = { tenantId: string; userId: string; role: string }
 
@@ -55,7 +66,7 @@ function normalize(
 
 // ── route ─────────────────────────────────────────────────────────────────────
 
-ingestRouter.post('/events', sdkKeyAuth, async (c) => {
+ingestRouter.post('/events', sdkKeyAuth, quotaCheck, async (c) => {
   const tenantId = c.get('tenantId')
 
   let body: Record<string, unknown>
@@ -101,6 +112,18 @@ ingestRouter.post('/events', sdkKeyAuth, async (c) => {
       console.error('[ingest] event-appender failed, releasing dedup key for retry:', (err as Error).message)
       await redis.del(dedupKey)
       return c.json({ error: { code: 'INTERNAL_ERROR', message: 'Event storage temporarily unavailable' } }, 500)
+    }
+
+    // Bill only the metered event types; lifecycle/findings/etc are free.
+    // Fire-and-forget so the increment never delays the 202 response.
+    const billedCount = events.reduce(
+      (n, ev) => n + (BILLED_EVENT_TYPES.has(ev.sdkEventType) ? 1 : 0),
+      0,
+    )
+    if (billedCount > 0) {
+      void incrementUsage(tenantId, billedCount).catch((err: Error) =>
+        console.error('[ingest] incrementUsage failed:', err.message),
+      )
     }
 
     // Session upsert + security are fire-and-forget — they don't affect event

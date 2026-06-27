@@ -18,6 +18,10 @@ import { mcpServersRouter } from './mcp-servers.js'
 import { internalRouter } from './internal.js'
 import { blogsRouter } from './blogs.js'
 import { seqRouter } from './seq.js'
+import { adminRouter } from './admin/index.js'
+import { meRouter } from './me.js'
+import { leadsRouter } from './leads.js'
+import { billingRouter } from './billing.js'
 
 type Variables = { tenantId: string; userId: string; role: string }
 
@@ -42,4 +46,8 @@ export function mountRoutes(app: Hono<{ Variables: Variables }>) {
   app.route('/v1/mcp-servers', mcpServersRouter)
   app.route('/v1/internal', internalRouter)
   app.route('/v1/blogs', blogsRouter)
+  app.route('/admin',    adminRouter)
+  app.route('/v1/me',    meRouter)
+  app.route('/v1/leads',   leadsRouter)
+  app.route('/v1/billing', billingRouter)
 }

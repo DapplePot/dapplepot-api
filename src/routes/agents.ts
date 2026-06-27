@@ -2,7 +2,10 @@ import { Hono } from 'hono'
 import { z } from 'zod'
 import { jwtAuth } from '../middleware/auth.js'
 import { requireRole } from '../middleware/authorize.js'
+import { requireWritableTenant } from '../middleware/requireWritableTenant.js'
+import { requireOnboardingComplete } from '../middleware/requireOnboardingComplete.js'
 import { listAgents, createAgent, updateAgent, deleteAgent, getAgentLlmModels, setAgentLlmModels, getAgentConnectedAgents, setAgentConnectedAgents } from '../queries/agents.pg.js'
+import { getCurrentPlan, getAgentCount } from '../queries/billing.pg.js'
 import { redis } from '../lib/redis.js'
 
 export const agentsRouter = new Hono()
@@ -26,7 +29,7 @@ agentsRouter.get('/', jwtAuth, requireRole('viewer'), async (c) => {
 })
 
 // POST /v1/agents — editor+
-agentsRouter.post('/', jwtAuth, requireRole('editor'), async (c) => {
+agentsRouter.post('/', jwtAuth, requireOnboardingComplete, requireWritableTenant, requireRole('editor'), async (c) => {
     let body: unknown
     try {
         body = await c.req.json()
@@ -41,6 +44,26 @@ agentsRouter.post('/', jwtAuth, requireRole('editor'), async (c) => {
     }
 
     const tenantId = c.get('tenantId')
+
+    // Plan-tier agent cap: trial + internal are limited to 3 agents; pro/team/enterprise unlimited.
+    const plan = await getCurrentPlan(tenantId)
+    if (plan && plan.limits.maxAgents !== null) {
+        const currentCount = await getAgentCount(tenantId)
+        if (currentCount >= plan.limits.maxAgents) {
+            return c.json(
+                {
+                    error: {
+                        code:        'AGENT_LIMIT_REACHED',
+                        message:     `Your ${plan.limits.displayName} plan allows up to ${plan.limits.maxAgents} agents. Upgrade to register more.`,
+                        current_plan: plan.planTier,
+                        max_agents:  plan.limits.maxAgents,
+                        upgrade_url: '/upgrade',
+                    },
+                },
+                403
+            )
+        }
+    }
 
     try {
         const agent = await createAgent({
@@ -60,7 +83,7 @@ agentsRouter.post('/', jwtAuth, requireRole('editor'), async (c) => {
 })
 
 // PATCH /v1/agents/:id — editor+
-agentsRouter.patch('/:id', jwtAuth, requireRole('editor'), async (c) => {
+agentsRouter.patch('/:id', jwtAuth, requireOnboardingComplete, requireWritableTenant, requireRole('editor'), async (c) => {
     const tenantId = c.get('tenantId')
     const agentId  = c.req.param('id')
 
@@ -87,7 +110,7 @@ agentsRouter.patch('/:id', jwtAuth, requireRole('editor'), async (c) => {
 })
 
 // DELETE /v1/agents/:id — editor+
-agentsRouter.delete('/:id', jwtAuth, requireRole('editor'), async (c) => {
+agentsRouter.delete('/:id', jwtAuth, requireOnboardingComplete, requireWritableTenant, requireRole('editor'), async (c) => {
     const tenantId = c.get('tenantId')
     const agentId  = c.req.param('id')
     await deleteAgent(tenantId, agentId)
@@ -103,7 +126,7 @@ agentsRouter.get('/:id/llm-models', jwtAuth, requireRole('viewer'), async (c) =>
 })
 
 // PUT /v1/agents/:id/llm-models — editor+
-agentsRouter.put('/:id/llm-models', jwtAuth, requireRole('editor'), async (c) => {
+agentsRouter.put('/:id/llm-models', jwtAuth, requireOnboardingComplete, requireWritableTenant, requireRole('editor'), async (c) => {
     const tenantId = c.get('tenantId')
     const agentId  = c.req.param('id')
     const body     = await c.req.json().catch(() => ({}))
@@ -130,7 +153,7 @@ agentsRouter.get('/:id/connected-agents', jwtAuth, requireRole('viewer'), async 
 })
 
 // PUT /v1/agents/:id/connected-agents — editor+
-agentsRouter.put('/:id/connected-agents', jwtAuth, requireRole('editor'), async (c) => {
+agentsRouter.put('/:id/connected-agents', jwtAuth, requireOnboardingComplete, requireWritableTenant, requireRole('editor'), async (c) => {
     const tenantId = c.get('tenantId')
     const agentId  = c.req.param('id')
     const body     = await c.req.json().catch(() => ({}))

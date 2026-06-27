@@ -177,3 +177,184 @@ export function securityAlertEmail(params: {
         text,
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Superadmin "Onboard Client" wizard — confirmation emails
+// ─────────────────────────────────────────────────────────────────────────────
+
+type OnboardPlan = 'Internal' | 'Enterprise'
+
+/**
+ * Sent when a superadmin creates a brand-new DapplePot user via the Onboard
+ * Client wizard. Includes a password-set link instead of sharing the raw
+ * password the superadmin typed — safer for handoff.
+ */
+export function onboardNewUserEmail(params: {
+    appUrl:        string
+    resetToken:    string
+    userName:      string
+    userEmail:     string
+    tenantName:    string
+    plan:          OnboardPlan
+}): EmailMessage {
+    const setupLink = `${params.appUrl}/reset-password?token=${params.resetToken}`
+    const planLabel = params.plan === 'Internal' ? 'Internal (comp)' : 'Enterprise'
+    const text = [
+        `Hi ${params.userName},`,
+        ``,
+        `Your DapplePot account is ready.`,
+        ``,
+        `Workspace: ${params.tenantName}`,
+        `Plan:      ${planLabel}`,
+        `Email:     ${params.userEmail}`,
+        ``,
+        `Set up your password to log in:`,
+        setupLink,
+        ``,
+        `This setup link expires in 1 hour.`,
+        `If you weren't expecting this, you can safely ignore this email.`,
+    ].join('\n')
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
+  <h2 style="margin-bottom:4px">Welcome to DapplePot</h2>
+  <p style="color:#555;margin-top:0">${escapeHtml(params.tenantName)} — ${planLabel}</p>
+  <p>Hi ${escapeHtml(params.userName)},</p>
+  <p>A DapplePot workspace has been provisioned for you. Click below to set your password and log in.</p>
+  <p style="margin:32px 0">
+    <a href="${setupLink}"
+       style="background:#6366f1;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600">
+      Set up your password
+    </a>
+  </p>
+  <p style="color:#888;font-size:13px">Workspace: <strong>${escapeHtml(params.tenantName)}</strong></p>
+  <p style="color:#888;font-size:13px">Plan: <strong>${planLabel}</strong></p>
+  <p style="color:#888;font-size:13px">This setup link expires in 1 hour.</p>
+</body>
+</html>`
+
+    return {
+        to: '',
+        subject: `Welcome to DapplePot — ${params.tenantName}`,
+        html,
+        text,
+    }
+}
+
+/**
+ * Sent when a superadmin links an existing DapplePot user as the admin of
+ * a newly-created Internal-Org or Enterprise workspace. Their existing
+ * account is unchanged — they just see a new workspace in the sidebar.
+ */
+export function onboardLinkedExistingUserEmail(params: {
+    appUrl:     string
+    userName:   string
+    tenantName: string
+    plan:       OnboardPlan
+}): EmailMessage {
+    const link = `${params.appUrl}/`
+    const planLabel = params.plan === 'Internal' ? 'Internal (comp)' : 'Enterprise'
+    const text = [
+        `Hi ${params.userName},`,
+        ``,
+        `You've been added as admin to a new DapplePot workspace.`,
+        ``,
+        `Workspace: ${params.tenantName}`,
+        `Plan:      ${planLabel}`,
+        ``,
+        `Log in and use the workspace switcher in the sidebar to access it:`,
+        link,
+        ``,
+        `Your existing workspaces are unchanged.`,
+    ].join('\n')
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
+  <h2 style="margin-bottom:4px">You've been added to a new workspace</h2>
+  <p style="color:#555;margin-top:0">${escapeHtml(params.tenantName)} — ${planLabel}</p>
+  <p>Hi ${escapeHtml(params.userName)},</p>
+  <p>
+    A new DapplePot workspace has been provisioned and you've been added as
+    <strong>admin</strong>. Your existing workspaces are unchanged — use the
+    workspace switcher in the sidebar to move between them.
+  </p>
+  <p style="margin:32px 0">
+    <a href="${link}"
+       style="background:#6366f1;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600">
+      Open DapplePot
+    </a>
+  </p>
+  <p style="color:#888;font-size:13px">Workspace: <strong>${escapeHtml(params.tenantName)}</strong></p>
+  <p style="color:#888;font-size:13px">Plan: <strong>${planLabel}</strong></p>
+</body>
+</html>`
+
+    return {
+        to: '',
+        subject: `You've been added to ${params.tenantName}`,
+        html,
+        text,
+    }
+}
+
+/**
+ * Sent when a superadmin Internal-Individual onboards an existing user
+ * whose personal workspace gets upgraded to plan_tier='internal'.
+ */
+export function onboardWorkspaceUpgradedEmail(params: {
+    appUrl:     string
+    userName:   string
+    tenantName: string
+}): EmailMessage {
+    const link = `${params.appUrl}/`
+    const text = [
+        `Hi ${params.userName},`,
+        ``,
+        `Good news — your personal workspace "${params.tenantName}" has been`,
+        `upgraded to the Internal (comp) plan.`,
+        ``,
+        `What changed:`,
+        `  - No more trial timer or quota`,
+        `  - Unlimited agents, seats, and events`,
+        `  - Any active paid subscription on this workspace is cancelled`,
+        ``,
+        `Your data, password, and SDK key are unchanged. Just log in normally:`,
+        link,
+    ].join('\n')
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<body style="font-family:sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
+  <h2 style="margin-bottom:4px">Your workspace has been upgraded</h2>
+  <p style="color:#555;margin-top:0">${escapeHtml(params.tenantName)} → Internal (comp)</p>
+  <p>Hi ${escapeHtml(params.userName)},</p>
+  <p>
+    Your personal workspace <strong>${escapeHtml(params.tenantName)}</strong> has
+    been upgraded to the Internal (comp) plan. No more trial timer, no quotas, and
+    your data + SDK key are unchanged.
+  </p>
+  <p style="color:#555">
+    Any active paid subscription on this workspace has been cancelled — you won't
+    be billed further.
+  </p>
+  <p style="margin:32px 0">
+    <a href="${link}"
+       style="background:#6366f1;color:#fff;padding:12px 24px;border-radius:6px;text-decoration:none;font-weight:600">
+      Open DapplePot
+    </a>
+  </p>
+</body>
+</html>`
+
+    return {
+        to: '',
+        subject: `Your DapplePot workspace has been upgraded`,
+        html,
+        text,
+    }
+}

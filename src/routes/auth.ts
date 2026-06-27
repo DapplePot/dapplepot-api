@@ -33,7 +33,16 @@ export const authRouter = new Hono()
 // Dummy hash used for timing-safe login when user not found
 const DUMMY_HASH = '$2a$12$LCY0MefVIEc3lEMFE5RFWef1nGsOJhqF/dj7jFJMnNRKjCt7CqAhW'
 
+// Dev/QA escape hatch — `DISABLE_AUTH_RATE_LIMIT=1` in .env makes every
+// rate-limit check return false. Useful while iterating on auth flows.
+// Re-enable for production by removing the var or setting it to anything
+// other than '1' / 'true'.
+const RATE_LIMIT_DISABLED =
+    process.env.DISABLE_AUTH_RATE_LIMIT === '1' ||
+    process.env.DISABLE_AUTH_RATE_LIMIT === 'true'
+
 async function isRateLimited(key: string, max: number, windowMs: number): Promise<boolean> {
+    if (RATE_LIMIT_DISABLED) return false
     const now = Date.now()
     const windowStart = now - windowMs
     const pipe = redis.pipeline()
@@ -66,7 +75,10 @@ function buildLoginResponse(
         expiresIn: ACCESS_EXPIRES_IN_SECONDS,
         user: {
             userId: user.userId,
-            tenantId: user.tenantId ?? '',
+            // Preserve null for orphan users (no active workspace) — the FE
+            // OnboardingGate checks for falsy tenantId to detect orphans.
+            // Coercing to '' would defeat that check.
+            tenantId: user.tenantId ?? null,
             email: user.email,
             name: user.name,
             role: user.role,

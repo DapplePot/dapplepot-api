@@ -15,6 +15,7 @@ interface UserRow extends Record<string, unknown> {
     created_at: Date | string
     updated_at: Date | string
     email_verified_at: Date | string | null
+    trial_consumed_at: Date | string | null
 }
 
 function toIso(d: Date | string): string {
@@ -31,6 +32,7 @@ function mapUser(r: UserRow): UserSummary & { passwordHash?: string } {
         status: r.status,
         createdAt: toIso(r.created_at),
         emailVerifiedAt: r.email_verified_at ? toIso(r.email_verified_at) : null,
+        trialConsumedAt: r.trial_consumed_at ? toIso(r.trial_consumed_at) : null,
         passwordHash: r.password_hash,
     }
 }
@@ -40,7 +42,7 @@ export async function findUserByEmail(
     email: string
 ): Promise<(UserSummary & { passwordHash: string }) | undefined> {
     const row = await queryRow<UserRow>(
-        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at, email_verified_at
+        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at, email_verified_at, trial_consumed_at
          FROM users
          WHERE tenant_id = $1 AND LOWER(email) = LOWER($2)
          LIMIT 1`,
@@ -54,7 +56,7 @@ export async function findUserByEmailAnyTenant(
     email: string
 ): Promise<(UserSummary & { passwordHash: string }) | undefined> {
     const row = await queryRow<UserRow>(
-        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at, email_verified_at
+        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at, email_verified_at, trial_consumed_at
          FROM users
          WHERE LOWER(email) = LOWER($1)
          LIMIT 1`,
@@ -66,7 +68,7 @@ export async function findUserByEmailAnyTenant(
 
 export async function findUserById(userId: string): Promise<(UserSummary & { passwordHash: string }) | undefined> {
     const row = await queryRow<UserRow>(
-        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at, email_verified_at
+        `SELECT user_id, tenant_id, email, name, role, status, password_hash, created_at, updated_at, email_verified_at, trial_consumed_at
          FROM users WHERE user_id = $1`,
         [userId]
     )
@@ -91,13 +93,15 @@ export async function listUsers(
         params.push(status)
     }
 
-    const rows = await queryRows<UserRow>(
+    const rows = await queryRows<UserRow & { is_owner: boolean }>(
         `SELECT u.user_id, m.tenant_id, u.email, u.name, m.role, u.status,
-                u.password_hash, u.created_at, u.updated_at, u.email_verified_at
+                u.password_hash, u.created_at, u.updated_at, u.email_verified_at,
+                (t.owner_user_id = u.user_id) AS is_owner
          FROM tenant_members m
-         JOIN users u ON u.user_id = m.user_id
+         JOIN users u    ON u.user_id    = m.user_id
+         JOIN tenants t  ON t.tenant_id  = m.tenant_id
          ${where}
-         ORDER BY m.joined_at DESC
+         ORDER BY (t.owner_user_id = u.user_id) DESC, m.joined_at DESC
          LIMIT $2 OFFSET $3`,
         params
     )
@@ -120,7 +124,7 @@ export async function listUsers(
         users: rows.map((r) => {
             const u = mapUser(r)
             delete u.passwordHash
-            return u as UserSummary
+            return { ...(u as UserSummary), isOwner: r.is_owner ?? false }
         }),
         total: parseInt(countRow?.count ?? '0', 10),
     }
@@ -281,6 +285,19 @@ export async function deleteUserById(userId: string): Promise<boolean> {
         )
         if (existing.length === 0) return false
 
+        // Owner protection: can't delete a user who owns any active org tenant.
+        // They must transfer ownership first (or delete the tenant itself).
+        // Personal tenants they own get cleaned up below — those are theirs to
+        // remove with their account.
+        const ownedOrgs = await tx.unsafe<{ tenant_id: string }[]>(
+            `SELECT tenant_id FROM tenants
+             WHERE owner_user_id = $1 AND kind = 'organization' AND enabled = true`,
+            [userId]
+        )
+        if (ownedOrgs.length > 0) {
+            throw new OwnerRemovalError()
+        }
+
         // Tear down personal tenants this user owns. Mirror deleteTenant()'s
         // approach for the non-cascading child tables.
         const personal = await tx.unsafe<{ tenant_id: string }[]>(
@@ -303,6 +320,126 @@ export async function deleteUserById(userId: string): Promise<boolean> {
         // tenant_members and email_verifications cascade on user delete.
         await tx.unsafe(`DELETE FROM users WHERE user_id = $1`, [userId])
         return true
+    })
+}
+
+/**
+ * Force-delete a user AND every organisation tenant they own. Destructive —
+ * intended for superadmin cleanup of test data or hard GDPR-style removals.
+ * Returns the list of tenants that were destroyed alongside the user, so the
+ * caller can show / audit the blast radius.
+ */
+export async function forceDeleteUserById(userId: string): Promise<{
+    deletedTenants: { tenantId: string; name: string }[]
+} | null> {
+    return sql.begin(async (tx) => {
+        const existing = await tx.unsafe<{ user_id: string }[]>(
+            `SELECT user_id FROM users WHERE user_id = $1 LIMIT 1`,
+            [userId]
+        )
+        if (existing.length === 0) return null
+
+        // Collect every tenant this user owns (personal + organization) so we
+        // can wipe them all. Personal tenants would have been cleaned up by the
+        // regular delete path anyway; orgs are the new behaviour here.
+        const owned = await tx.unsafe<{ tenant_id: string; name: string }[]>(
+            `SELECT tenant_id, name FROM tenants WHERE owner_user_id = $1`,
+            [userId]
+        )
+
+        for (const t of owned) {
+            // Mirror deleteTenant()'s sequence for non-CASCADE FKs.
+            await tx.unsafe(`DELETE FROM alerts         WHERE tenant_id = $1`, [t.tenant_id])
+            await tx.unsafe(`DELETE FROM invites        WHERE tenant_id = $1`, [t.tenant_id])
+            await tx.unsafe(`DELETE FROM sessions       WHERE tenant_id = $1`, [t.tenant_id])
+            await tx.unsafe(`DELETE FROM audit_archives WHERE tenant_id = $1`, [t.tenant_id])
+            await tx.unsafe(`DELETE FROM tenants        WHERE tenant_id = $1`, [t.tenant_id])
+        }
+
+        // FKs without CASCADE that point at users.user_id
+        await tx.unsafe(`DELETE FROM invites         WHERE invited_by = $1`, [userId])
+        await tx.unsafe(`DELETE FROM password_resets WHERE user_id    = $1`, [userId])
+        await tx.unsafe(`DELETE FROM refresh_tokens  WHERE user_id    = $1`, [userId])
+
+        await tx.unsafe(`DELETE FROM users WHERE user_id = $1`, [userId])
+
+        return {
+            deletedTenants: owned.map(t => ({ tenantId: t.tenant_id, name: t.name })),
+        }
+    })
+}
+
+/**
+ * Removes a user from a tenant's membership list. Used by Settings → Users →
+ * "Remove from workspace". The user account stays intact — they just lose
+ * access to this specific workspace. If their active workspace was this one,
+ * we re-point users.tenant_id to another tenant they're a member of, or NULL
+ * (orphan state) if they have no others.
+ *
+ * Guards:
+ *   - Owner cannot be removed (must transfer ownership first)
+ *   - Cannot remove the last admin (forces owner action)
+ */
+export async function removeUserFromTenant(
+    tenantId: string,
+    userId: string
+): Promise<{ removed: boolean; repointedTo: string | null }> {
+    return sql.begin(async (tx) => {
+        // Owner guard
+        const ownerRows = await tx.unsafe<{ owner_user_id: string | null }[]>(
+            `SELECT owner_user_id FROM tenants WHERE tenant_id = $1 LIMIT 1`,
+            [tenantId]
+        )
+        if (ownerRows[0]?.owner_user_id === userId) {
+            throw new OwnerRoleChangeError()  // re-use — same semantic protection
+        }
+
+        // Last-admin guard: don't strand the workspace
+        const memberRows = await tx.unsafe<{ role: Role }[]>(
+            `SELECT role FROM tenant_members WHERE user_id = $1 AND tenant_id = $2 LIMIT 1`,
+            [userId, tenantId]
+        )
+        const member = memberRows[0]
+        if (!member) return { removed: false, repointedTo: null }
+        if (member.role === 'admin') {
+            const adminCountRows = await tx.unsafe<{ count: string }[]>(
+                `SELECT COUNT(*)::text AS count FROM tenant_members
+                 WHERE tenant_id = $1 AND role = 'admin'`,
+                [tenantId]
+            )
+            const adminCount = parseInt(adminCountRows[0]?.count ?? '0', 10)
+            if (adminCount <= 1) throw new LastAdminError()
+        }
+
+        // Drop the membership row
+        await tx.unsafe(
+            `DELETE FROM tenant_members WHERE user_id = $1 AND tenant_id = $2`,
+            [userId, tenantId]
+        )
+
+        // If this was the user's active workspace, re-point to another (or NULL).
+        const userRows = await tx.unsafe<{ tenant_id: string | null }[]>(
+            `SELECT tenant_id FROM users WHERE user_id = $1 LIMIT 1`,
+            [userId]
+        )
+        if (userRows[0]?.tenant_id !== tenantId) {
+            return { removed: true, repointedTo: userRows[0]?.tenant_id ?? null }
+        }
+        // Same as deleteTenant's re-point pattern: pick the oldest other membership.
+        const otherRows = await tx.unsafe<{ tenant_id: string; role: Role }[]>(
+            `SELECT tenant_id, role FROM tenant_members
+             WHERE user_id = $1
+             ORDER BY joined_at ASC
+             LIMIT 1`,
+            [userId]
+        )
+        const other = otherRows[0]
+        await tx.unsafe(
+            `UPDATE users SET tenant_id = $1, role = $2, updated_at = now()
+             WHERE user_id = $3`,
+            [other?.tenant_id ?? null, other?.role ?? null, userId]
+        )
+        return { removed: true, repointedTo: other?.tenant_id ?? null }
     })
 }
 
@@ -333,6 +470,20 @@ export class LastAdminError extends Error {
     }
 }
 
+export class OwnerRoleChangeError extends Error {
+    constructor() {
+        super('OWNER_ROLE_LOCKED')
+        this.name = 'OwnerRoleChangeError'
+    }
+}
+
+export class OwnerRemovalError extends Error {
+    constructor() {
+        super('OWNER_REMOVAL_FORBIDDEN')
+        this.name = 'OwnerRemovalError'
+    }
+}
+
 // Changes the target user's role inside this tenant. Also syncs users.role
 // when the target's *active* workspace is this same tenant, so the next JWT
 // they get carries the new role. If they're currently looking at another
@@ -354,6 +505,18 @@ export async function updateUserRole(
         )
         const current = currentRows[0]
         if (!current) return undefined
+
+        // Owner protection: the workspace owner cannot be demoted by anyone
+        // (including themselves via this path). Owners must transfer ownership
+        // first, then delete their account, or contact support. Keeps the
+        // "who's responsible for billing" pointer stable.
+        const ownerRows = await tx.unsafe<{ owner_user_id: string | null }[]>(
+            `SELECT owner_user_id FROM tenants WHERE tenant_id = $1 LIMIT 1`,
+            [tenantId]
+        )
+        if (ownerRows[0]?.owner_user_id === userId && role !== 'admin') {
+            throw new OwnerRoleChangeError()
+        }
 
         // If we're demoting an admin, make sure they aren't the last one.
         if (current.role === 'admin' && role !== 'admin') {
