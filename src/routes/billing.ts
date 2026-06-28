@@ -274,7 +274,7 @@ async function handleSubscriptionActivated(data: any, custom: Record<string, str
     // (typical for self-signup customers upgrading from Free Trial), promote it
     // to an organization so the multi-user UX (invites, Users tab, RBAC) lights up.
     // Pro stays personal — Pro is single-seat by design.
-    const promotesToOrg = planMap.plan === 'team' || planMap.plan === 'enterprise'
+    const promotesToOrg = planMap.plan === 'team'
 
     // owner_user_id — stable pointer to the person who pays/runs the workspace.
     // If already set (older tenant), preserve it. Otherwise grab the current

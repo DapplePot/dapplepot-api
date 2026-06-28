@@ -63,7 +63,14 @@ adminTenantsRouter.post('/', async (c) => {
         return c.json({ error: { code: 'BAD_REQUEST', message: parsed.error.errors[0]?.message ?? 'Validation error' } }, 400)
     }
     try {
-        const tenant = await adminCreateTenant({ actorUserId, ...parsed.data })
+        const d = parsed.data
+        const tenant = await adminCreateTenant({
+            actorUserId,
+            name:     d.name!,
+            kind:     d.kind!,
+            planTier: d.planTier!,
+            note:     d.note,
+        })
         return c.json(tenant, 201)
     } catch (err) {
         const msg = (err as Error).message

@@ -65,6 +65,7 @@ function buildLoginResponse(
         status: 'active' | 'disabled'
         createdAt: string
         emailVerifiedAt?: string | null
+        trialConsumedAt?: string | null
     },
     accessToken: string,
     refreshToken: string
@@ -85,6 +86,7 @@ function buildLoginResponse(
             status: user.status,
             createdAt: user.createdAt,
             emailVerifiedAt: user.emailVerifiedAt ?? null,
+            trialConsumedAt: user.trialConsumedAt ?? null,
         },
     }
 }

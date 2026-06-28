@@ -32,7 +32,16 @@ leadsRouter.post('/contact-sales', async (c) => {
         return c.json({ error: { code: 'BAD_REQUEST', message: parsed.error.errors[0]?.message ?? 'Validation error' } }, 400)
     }
     try {
-        const lead = await createEnterpriseLead(parsed.data)
+        const d = parsed.data
+        const lead = await createEnterpriseLead({
+            name:                  d.name!,
+            email:                 d.email!,
+            company:               d.company,
+            monthlyVolumeEstimate: d.monthlyVolumeEstimate,
+            deploymentPreference:  d.deploymentPreference,
+            complianceNeeds:       d.complianceNeeds,
+            notes:                 d.notes,
+        })
         return c.json({ ok: true, leadId: lead.leadId }, 201)
     } catch (err) {
         return c.json({ error: { code: 'INTERNAL_ERROR', message: (err as Error).message } }, 500)

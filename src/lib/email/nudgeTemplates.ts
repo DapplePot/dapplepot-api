@@ -5,7 +5,7 @@ export type QuotaWarningKind     = '80' | '100'
 export type TrialMilestoneKind   = 'day_25' | 'day_30'
 export type LifecycleKind        = 'readonly_warning_30d' | 'suspension_warning' | 'deletion_warning_30d' | 'deletion_imminent'
 
-const APP_URL = env.APP_URL ?? 'https://app.dapplepot.com'
+const APP_URL = env.DAPPLEPOT_APP_URL ?? 'https://app.dapplepot.com'
 
 function shell(title: string, body: string, ctaLabel: string, ctaUrl: string): string {
     return `
