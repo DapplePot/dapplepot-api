@@ -326,7 +326,8 @@ export interface SignupIndividualResult {
 export async function signupIndividual(params: {
     email: string
     name: string
-    passwordHash: string
+    // null for OAuth-only accounts; nullable per migration 061_oauth_identity.sql
+    passwordHash: string | null
 }): Promise<SignupIndividualResult> {
     const { rawKey, keyHash, maskedKey } = generateSdkKey()
     const tenantName = `${cleanName(params.name)}'s workspace`

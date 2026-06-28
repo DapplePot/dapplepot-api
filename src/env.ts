@@ -55,6 +55,13 @@ const envSchema = z.object({
   LEMONSQUEEZY_VARIANT_PRO_ANNUAL:    z.string().optional(),
   LEMONSQUEEZY_VARIANT_TEAM_MONTHLY:  z.string().optional(),
   LEMONSQUEEZY_VARIANT_TEAM_ANNUAL:   z.string().optional(),
+  // ── Google OAuth (optional) ─────────────────────────────────────────────
+  // Set all three to enable "Continue with Google" on Login / Signup /
+  // Accept invite. Leaving any unset disables the route (it 404s) and the
+  // UI hides the button.
+  GOOGLE_CLIENT_ID:     z.string().optional(),
+  GOOGLE_CLIENT_SECRET: z.string().optional(),
+  GOOGLE_REDIRECT_URI:  z.string().url().optional(),
 })
 
 function parseEnv() {
