@@ -11,7 +11,7 @@ import { config } from 'dotenv'
 
 config()
 
-const SUPERADMIN_EMAIL    = 'superadmin@dapplepot.dev'
+const SUPERADMIN_EMAIL    = process.env.SUPERADMIN_EMAIL ?? 'superadmin@dapplepot.dev'
 const SUPERADMIN_PASSWORD = 'superadmin123'
 const SUPERADMIN_NAME     = 'Platform Superadmin'
 
