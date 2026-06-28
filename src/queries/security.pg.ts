@@ -5,11 +5,52 @@ import type {
 } from '../types/security.js'
 import { queryRow, queryRows } from '../lib/postgres.js'
 
+export interface ObservedSignals {
+  signals:   Array<{ signalId: string; count: number }>
+  subchecks: Array<{ subCheckId: string; signalId: string; checkLabel: string; count: number }>
+}
+
+export async function getObservedSignals(tenantId: string): Promise<ObservedSignals> {
+  // JOIN signal_registry so each sub-check maps to its canonical signal exactly once.
+  // Reading the pair directly off security_findings can show the same sub-check under
+  // multiple signals if older findings were written with inconsistent (sub_check, signal)
+  // pairs — registry is the source of truth for that mapping.
+  const [signals, subchecks] = await Promise.all([
+    queryRows<{ owasp_signal_id: string; count: number }>(
+      `SELECT sr.owasp_signal_id, count(*) AS count
+       FROM security_findings sf
+       JOIN signal_registry sr ON sr.sub_check_id = sf.sub_check_id
+       WHERE sf.tenant_id = $1
+       GROUP BY sr.owasp_signal_id
+       ORDER BY count DESC`,
+      [tenantId]
+    ),
+    queryRows<{ sub_check_id: string; owasp_signal_id: string; check_label: string; count: number }>(
+      `SELECT sr.sub_check_id, sr.owasp_signal_id, sr.check_label, count(*) AS count
+       FROM security_findings sf
+       JOIN signal_registry sr ON sr.sub_check_id = sf.sub_check_id
+       WHERE sf.tenant_id = $1
+       GROUP BY sr.sub_check_id, sr.owasp_signal_id, sr.check_label
+       ORDER BY count DESC`,
+      [tenantId]
+    ),
+  ])
+  return {
+    signals:   signals.map(r => ({ signalId: r.owasp_signal_id, count: Number(r.count) })),
+    subchecks: subchecks.map(r => ({
+      subCheckId: r.sub_check_id,
+      signalId:   r.owasp_signal_id,
+      checkLabel: r.check_label,
+      count:      Number(r.count),
+    })),
+  }
+}
+
 export async function getSecurityOverview(
   tenantId: string,
   windowHours: number = 168  // 7 days default
 ): Promise<SecurityOverview> {
-  const [scored, dist, owasp, topRisk, asiSignals] = await Promise.all([
+  const [scored, dist, owasp, topRisk, asiSignals, topSubchecks, recentAlerted] = await Promise.all([
     // Total sessions scored in window
     queryRow<{ total: number; high_critical: number; avg_score: number }>(
       `SELECT count(*)                                                     AS total,
@@ -68,6 +109,62 @@ export async function getSecurityOverview(
        LIMIT 10`,
       [tenantId, windowHours]
     ),
+
+    // Top sub-checks fired, with the latest session that triggered each
+    queryRows<{
+      sub_check_id: string; owasp_signal_id: string; framework: string;
+      check_label: string; count: number; latest_session_id: string; last_seen_at: Date;
+    }>(
+      `SELECT sub_check_id,
+              owasp_signal_id,
+              framework,
+              check_label,
+              count(*) AS count,
+              (array_agg(session_id ORDER BY created_at DESC))[1] AS latest_session_id,
+              max(created_at) AS last_seen_at
+       FROM security_findings
+       WHERE tenant_id = $1
+         AND created_at >= now() - make_interval(hours => $2)
+       GROUP BY sub_check_id, owasp_signal_id, framework, check_label
+       ORDER BY count DESC
+       LIMIT 10`,
+      [tenantId, windowHours]
+    ),
+
+    // 5 most-recently-alerted distinct sessions in the window
+    queryRows<{
+      session_id: string; agent_id: string | null; agent_name: string | null;
+      alert_count: number; ended_at: Date | null; duration_ms: number | null;
+      last_alert_at: Date;
+    }>(
+      `SELECT s.session_id,
+              s.agent_id,
+              ag.name AS agent_name,
+              s.ended_at,
+              s.duration_ms,
+              cnt.alert_count,
+              latest.triggered_at AS last_alert_at
+       FROM sessions s
+       LEFT JOIN agents ag ON ag.agent_id = s.agent_id
+       JOIN LATERAL (
+         SELECT count(*)::int AS alert_count
+         FROM alerts
+         WHERE session_id = s.session_id
+           AND triggered_at >= now() - make_interval(hours => $2)
+       ) cnt ON cnt.alert_count > 0
+       JOIN LATERAL (
+         SELECT triggered_at
+         FROM alerts
+         WHERE session_id = s.session_id
+           AND triggered_at >= now() - make_interval(hours => $2)
+         ORDER BY triggered_at DESC
+         LIMIT 1
+       ) latest ON true
+       WHERE s.tenant_id = $1
+       ORDER BY latest.triggered_at DESC
+       LIMIT 5`,
+      [tenantId, windowHours]
+    ),
   ])
 
   const topAgentsRows = await queryRows<any>(
@@ -106,6 +203,24 @@ export async function getSecurityOverview(
       asiScore:       r.asi_score,
       asiBand:        r.asi_band as import('../types/security.js').RiskBand,
       owaspSignalIds: [],
+    })),
+    topSubchecks: topSubchecks.map(r => ({
+      subCheckId:      r.sub_check_id,
+      owaspSignalId:   r.owasp_signal_id,
+      framework:       r.framework,
+      checkLabel:      r.check_label,
+      count:           Number(r.count),
+      latestSessionId: r.latest_session_id,
+      lastSeenAt:      r.last_seen_at.toISOString(),
+    })),
+    recentAlertedSessions: recentAlerted.map(r => ({
+      sessionId:   r.session_id,
+      agentId:     r.agent_id,
+      agentName:   r.agent_name,
+      alertCount:  Number(r.alert_count),
+      endedAt:     r.ended_at?.toISOString() ?? null,
+      durationMs:  r.duration_ms,
+      lastAlertAt: r.last_alert_at.toISOString(),
     })),
     topAgents: topAgentsRows.map(r => ({
       agentId:       r.agent_id,
@@ -283,7 +398,7 @@ export async function getAgentProfile(
   )
   if (!agg) return null
 
-  const [breakdownRows, sessionRows, historyRows] = await Promise.all([
+  const [breakdownRows, sessionRows, historyRows, alertedRows, topSubchecksRows] = await Promise.all([
     queryRows<any>(
       `SELECT owasp_signal_id, framework,
               fired_count, sessions_affected, last_seen_at
@@ -343,6 +458,49 @@ export async function getAgentProfile(
        ORDER BY bs.hour ASC`,
       [agentId, tenantId],
     ),
+
+    // 5 most-recently-alerted distinct sessions for this agent (all-time)
+    queryRows<any>(
+      `SELECT s.session_id,
+              s.ended_at,
+              s.duration_ms,
+              cnt.alert_count,
+              latest.triggered_at AS last_alert_at
+       FROM sessions s
+       JOIN LATERAL (
+         SELECT count(*)::int AS alert_count
+         FROM alerts WHERE session_id = s.session_id
+       ) cnt ON cnt.alert_count > 0
+       JOIN LATERAL (
+         SELECT triggered_at
+         FROM alerts WHERE session_id = s.session_id
+         ORDER BY triggered_at DESC
+         LIMIT 1
+       ) latest ON true
+       WHERE s.agent_id = $1 AND s.tenant_id = $2
+       ORDER BY latest.triggered_at DESC
+       LIMIT 5`,
+      [agentId, tenantId],
+    ),
+
+    // Top sub-checks fired for this agent, with latest session that triggered each.
+    // security_findings has no agent_id column, so we join through sessions.
+    queryRows<any>(
+      `SELECT sf.sub_check_id,
+              sf.owasp_signal_id,
+              sf.framework,
+              sf.check_label,
+              count(*) AS count,
+              (array_agg(sf.session_id ORDER BY sf.created_at DESC))[1] AS latest_session_id,
+              max(sf.created_at) AS last_seen_at
+       FROM security_findings sf
+       JOIN sessions s ON s.session_id = sf.session_id
+       WHERE s.agent_id = $1 AND s.tenant_id = $2
+       GROUP BY sf.sub_check_id, sf.owasp_signal_id, sf.framework, sf.check_label
+       ORDER BY count DESC
+       LIMIT 10`,
+      [agentId, tenantId],
+    ),
   ])
 
   const signalBreakdown: AgentSignalBreakdown[] = breakdownRows.map(r => ({
@@ -387,6 +545,22 @@ export async function getAgentProfile(
     signalBreakdown,
     recentSessions,
     scoreHistory,
+    recentAlertedSessions: alertedRows.map(r => ({
+      sessionId:   r.session_id,
+      alertCount:  Number(r.alert_count),
+      endedAt:     r.ended_at ? new Date(r.ended_at).toISOString() : null,
+      durationMs:  r.duration_ms,
+      lastAlertAt: new Date(r.last_alert_at).toISOString(),
+    })),
+    topSubchecks: topSubchecksRows.map(r => ({
+      subCheckId:      r.sub_check_id,
+      owaspSignalId:   r.owasp_signal_id,
+      framework:       r.framework,
+      checkLabel:      r.check_label,
+      count:           Number(r.count),
+      latestSessionId: r.latest_session_id,
+      lastSeenAt:      new Date(r.last_seen_at).toISOString(),
+    })),
   }
 }
 

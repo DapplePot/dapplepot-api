@@ -16,7 +16,7 @@ import {
   getSecurityOverview, getSessionScore,
   getSessionFindings, getRemediationStats, getTopAgents, getAgentProfile,
   getSignalRegistry, getAgentAlertConfig, upsertAgentAlertConfig,
-  getSessionActions,
+  getSessionActions, getObservedSignals,
 } from '../queries/security.pg.js'
 import { getToolCallBaseline } from '../queries/security.ch.js'
 import type { OnlineAction } from '../types/security.js'
@@ -97,6 +97,19 @@ securityRouter.get('/agents/:id', async (c) => {
   )
   if (!profile) return c.json({ error: { code: 'NOT_FOUND', message: 'No security data for this agent' } }, 404)
   return c.json(profile)
+})
+
+// GET /v1/security/observed — distinct signal IDs / sub-check IDs that have actually
+// produced findings for this tenant. Used to populate the Sessions page filter dropdowns
+// so users only see live values, not the full 121-row static registry.
+securityRouter.get('/observed', async (c) => {
+  const tenantId = c.get('tenantId')
+  const data = await cached(
+    `dp:api:security:observed:${tenantId}`,
+    CACHE_TTL_SECURITY_OVERVIEW,
+    () => getObservedSignals(tenantId),
+  )
+  return c.json(data)
 })
 
 // GET /v1/security/signals — full signal registry (121 non-excluded sub-checks)

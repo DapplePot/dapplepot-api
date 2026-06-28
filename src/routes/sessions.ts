@@ -42,6 +42,9 @@ sessionsRouter.get('/', async (c) => {
     ...(q['since']       ? { since: q['since'] }             : {}),
     ...(q['until']       ? { until: q['until'] }             : {}),
     ...(q['q']           ? { q: q['q'] }                     : {}),
+    ...(q['hasAlerts']   ? { hasAlerts: q['hasAlerts'] === 'true' } : {}),
+    ...(q['signalId']    ? { signalId: q['signalId'] }       : {}),
+    ...(q['subCheckId']  ? { subCheckId: q['subCheckId'] }   : {}),
   })
 
   const limit = Math.min(q['limit'] ? Number(q['limit']) : 20, 100)

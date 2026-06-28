@@ -69,6 +69,40 @@ export async function getSessionList(
   const limit = Math.min(params.limit ?? 20, 100)
   const offset = (page - 1) * limit
 
+  const filterArgs = [
+    tenantId,
+    params.status ?? null,
+    params.agentId ?? null,
+    params.environment ?? null,
+    params.since ?? null,
+    params.until ?? null,
+    params.q ?? null,
+    params.hasAlerts ?? null,
+    params.signalId ?? null,
+    params.subCheckId ?? null,
+  ]
+
+  const filterClause = `
+    s.tenant_id = $1
+    AND ($2::text        IS NULL OR s.status          = $2)
+    AND ($3::uuid        IS NULL OR s.agent_id         = $3)
+    AND ($4::text        IS NULL OR s.environment      = $4)
+    AND ($5::timestamptz IS NULL OR s.started_at       >= $5)
+    AND ($6::timestamptz IS NULL OR s.started_at       < $6)
+    AND ($7::text        IS NULL OR s.session_id::text LIKE $7 || '%'
+                                  OR s.user_context_id = $7)
+    AND ($8::boolean     IS NULL OR ($8 = TRUE AND EXISTS (
+                                       SELECT 1 FROM alerts al
+                                       WHERE al.session_id = s.session_id)))
+    AND ($9::text        IS NULL OR EXISTS (
+                                       SELECT 1 FROM security_findings sf
+                                       WHERE sf.session_id = s.session_id
+                                         AND sf.owasp_signal_id = $9))
+    AND ($10::text       IS NULL OR EXISTS (
+                                       SELECT 1 FROM security_findings sf
+                                       WHERE sf.session_id = s.session_id
+                                         AND sf.sub_check_id = $10))`
+
   const rows = await queryRows<RawSession>(
     `SELECT
       s.session_id, s.status, s.agent_id, s.agent_version, s.environment,
@@ -77,53 +111,21 @@ export async function getSessionList(
       COUNT(a.alert_id)::int AS alert_count
     FROM sessions s
     LEFT JOIN alerts a ON a.session_id = s.session_id
-    WHERE s.tenant_id = $1
-      AND ($2::text        IS NULL OR s.status          = $2)
-      AND ($3::uuid        IS NULL OR s.agent_id         = $3)
-      AND ($4::text        IS NULL OR s.environment      = $4)
-      AND ($5::timestamptz IS NULL OR s.started_at       >= $5)
-      AND ($6::timestamptz IS NULL OR s.started_at       < $6)
-      AND ($7::text        IS NULL OR s.session_id::text LIKE $7 || '%'
-                                    OR s.user_context_id = $7)
+    WHERE ${filterClause}
     GROUP BY s.session_id
     ORDER BY CASE WHEN s.status = 'open'
                   THEN s.last_active_at
                   ELSE s.ended_at
              END DESC NULLS LAST
-    LIMIT $8 OFFSET $9`,
-    [
-      tenantId,
-      params.status ?? null,
-      params.agentId ?? null,
-      params.environment ?? null,
-      params.since ?? null,
-      params.until ?? null,
-      params.q ?? null,
-      limit,
-      offset,
-    ]
+    LIMIT $11 OFFSET $12`,
+    [...filterArgs, limit, offset]
   )
 
   const total = await queryValue<number>(
     `SELECT COUNT(DISTINCT s.session_id)
     FROM sessions s
-    WHERE s.tenant_id = $1
-      AND ($2::text        IS NULL OR s.status          = $2)
-      AND ($3::uuid        IS NULL OR s.agent_id         = $3)
-      AND ($4::text        IS NULL OR s.environment      = $4)
-      AND ($5::timestamptz IS NULL OR s.started_at       >= $5)
-      AND ($6::timestamptz IS NULL OR s.started_at       < $6)
-      AND ($7::text        IS NULL OR s.session_id::text LIKE $7 || '%'
-                                    OR s.user_context_id = $7)`,
-    [
-      tenantId,
-      params.status ?? null,
-      params.agentId ?? null,
-      params.environment ?? null,
-      params.since ?? null,
-      params.until ?? null,
-      params.q ?? null,
-    ]
+    WHERE ${filterClause}`,
+    filterArgs
   )
 
   return { sessions: rows.map(mapSessionSummary), total: Number(total ?? 0) }

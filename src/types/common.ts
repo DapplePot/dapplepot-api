@@ -27,6 +27,9 @@ export interface SessionListParams extends ListParams {
   agentId?: string
   environment?: string
   q?: string
+  hasAlerts?: boolean
+  signalId?: string
+  subCheckId?: string
 }
 
 export interface AlertListParams extends ListParams {
