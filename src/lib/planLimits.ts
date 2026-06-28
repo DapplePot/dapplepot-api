@@ -60,7 +60,12 @@ export interface PlanLimits {
     /** Whether the tenant can request / download sealed audit reports. */
     canExportSealedAudit: boolean
 
-    /** Whether overages on event quota are billed (vs hard-cap blocked). */
+    /**
+     * Whether overages on event quota are billed. Currently false for every
+     * tier — all tenants hard-cap (429) at quota. Kept as a flag so we can
+     * flip it back per-tier once metered billing is wired through
+     * `routes/billing.ts` (today there's no path that actually charges).
+     */
     overageBillable: boolean
 
     /** Whether the tier may be selected via the self-serve signup flow. */
@@ -116,7 +121,7 @@ export const PLAN_LIMITS: Readonly<Record<PlanTier, PlanLimits>> = {
         allowedChannels:      [],
         canInviteTeammates:   false,
         canExportSealedAudit: false,
-        overageBillable:      true,
+        overageBillable:      false,
         isSelfServe:          true,
         displayName:          'Pro',
     },
@@ -131,7 +136,7 @@ export const PLAN_LIMITS: Readonly<Record<PlanTier, PlanLimits>> = {
         allowedChannels:      ['slack', 'msteams', 'webhook'],
         canInviteTeammates:   true,
         canExportSealedAudit: false,
-        overageBillable:      true,
+        overageBillable:      false,
         isSelfServe:          true,
         displayName:          'Team',
     },
@@ -148,7 +153,7 @@ export const PLAN_LIMITS: Readonly<Record<PlanTier, PlanLimits>> = {
         allowedChannels:      ['slack', 'msteams', 'webhook', 'pagerduty'],
         canInviteTeammates:   true,
         canExportSealedAudit: true,
-        overageBillable:      true,
+        overageBillable:      false,
         isSelfServe:          false,
         displayName:          'Enterprise',
     },
@@ -161,12 +166,6 @@ export const PLAN_LIMITS: Readonly<Record<PlanTier, PlanLimits>> = {
 export function getPlanLimits(plan: PlanTier): PlanLimits {
     return PLAN_LIMITS[plan]
 }
-
-/**
- * Per-1k-events overage rate in USD. Applied during invoice generation
- * for tenants where PLAN_LIMITS[tier].overageBillable === true.
- */
-export const OVERAGE_RATE_USD_PER_1K_EVENTS = 0.50
 
 /** Billing-cycle prices in USD (matches pricing_strategy.md §4). */
 export const PLAN_PRICES_USD: Readonly<Record<'pro' | 'team', { monthly: number; annual: number }>> = {

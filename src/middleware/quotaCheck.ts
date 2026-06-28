@@ -4,7 +4,8 @@
  * Mount in front of the ingest route. For each request:
  *   1. Resolves the tenant's current plan + open billing period.
  *   2. If the tenant is at/over quota AND on a tier without overage
- *      (trial, internal), rejects with 429.
+ *      (currently every tier — see PLAN_LIMITS.*.overageBillable),
+ *      rejects with 429.
  *   3. Otherwise, sets `quotaPolicy` on the request context so the
  *      ingest route knows whether to mark inserts as overage.
  *
