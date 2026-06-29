@@ -24,8 +24,7 @@ See `.env.example` for the full set. The minimum to boot:
 - `REDIS_URL` — `redis://localhost:6379`
 - `DAPPLEPOT_JWT_SECRET`
 - `INTERNAL_API_SECRET` — shared with `dapplepot-security`
-- `AUDIT_S3_BUCKET` + AWS credentials (instance profile, env vars, or `AWS_ENDPOINT_URL` for MinIO)
-- `GCS_*` — Google Cloud Storage credentials (blogs media)
+- `GCS_*` — Google Cloud Storage credentials. Two buckets: `GCS_BLOG_BUCKET` (public, blog/marketing media) and `GCS_APP_BUCKET` (private, sealed audit archives), both in `asia-south1`
 
 To enable billing (Lemon Squeezy):
 - `LEMONSQUEEZY_API_KEY`, `LEMONSQUEEZY_STORE_ID`, `LEMONSQUEEZY_WEBHOOK_SECRET`

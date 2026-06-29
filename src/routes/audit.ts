@@ -6,7 +6,7 @@ import { requireFeature } from '../middleware/planFeature.js'
 import { rateLimitMiddleware } from '../middleware/ratelimit.js'
 import { listAuditArchives, getAuditArchive, findSealedArchiveForPeriod } from '../queries/audit.pg.js'
 import { sealMonthlyArchive, generateLiveReport, generateSessionReport } from '../lib/audit-generator.js'
-import { downloadAuditArchive } from '../lib/s3.js'
+import { downloadAuditArchive } from '../lib/gcs.js'
 import { NotFoundError } from '../types/common.js'
 
 type Variables = { tenantId: string; userId: string; role: string }

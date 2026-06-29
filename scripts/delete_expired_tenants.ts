@@ -6,11 +6,11 @@
  *
  * Deletion order:
  *   1. ClickHouse rows (obs_events) for the tenant
- *   2. Postgres tenant row — CASCADE removes:
+ *   2. GCS audit archives for the tenant (deleted from GCS_APP_BUCKET)
+ *   3. Postgres tenant row — CASCADE removes:
  *        agents, channels, sessions, alerts, billing_periods,
  *        subscriptions, upgrade_requests, nudge_dispatch_log,
  *        tenant_members, audit_archives metadata
- *   3. S3 audit archives for the tenant (deleted from the audit bucket)
  *   4. Users with no remaining tenant_members rows are also deleted
  *
  * Idempotent: deletion is the final state, so re-running picks up any
@@ -23,10 +23,21 @@
 import 'dotenv/config'
 import postgres from 'postgres'
 import { createClient } from '@clickhouse/client'
-import { S3Client, ListObjectsV2Command, DeleteObjectsCommand } from '@aws-sdk/client-s3'
+import { Storage } from '@google-cloud/storage'
 
 const DRY_RUN = process.env.DRY_RUN === '1'
 if (DRY_RUN) console.log('🟡 DRY RUN — no destructive operations will be performed')
+
+function buildGcs(): Storage | null {
+    const projectId = process.env.GCS_PROJECT_ID
+    const email     = process.env.GCS_CLIENT_EMAIL
+    const key       = process.env.GCS_PRIVATE_KEY
+    if (!projectId || !email || !key) return null
+    return new Storage({
+        projectId,
+        credentials: { client_email: email, private_key: key.replace(/\\n/g, '\n') },
+    })
+}
 
 async function main(): Promise<void> {
     const ssl = process.env.POSTGRES_SSL === 'true' ? 'require' : false
@@ -38,8 +49,8 @@ async function main(): Promise<void> {
         password: process.env.CLICKHOUSE_PASSWORD ?? '',
     })
 
-    const s3 = new S3Client({ region: process.env.AWS_REGION ?? 'us-east-1' })
-    const auditBucket = process.env.AUDIT_S3_BUCKET
+    const gcs         = buildGcs()
+    const auditBucket = process.env.GCS_APP_BUCKET
 
     try {
         const targets = await sql<{ tenant_id: string; name: string }[]>`
@@ -71,27 +82,15 @@ async function main(): Promise<void> {
                 })
             }
 
-            // 2. S3 audit archives — list + delete in batches of 1000
-            if (auditBucket) {
-                let continuation: string | undefined
-                let totalDeleted = 0
-                do {
-                    const listed = await s3.send(new ListObjectsV2Command({
-                        Bucket: auditBucket,
-                        Prefix: `tenant=${t.tenant_id}/`,
-                        ContinuationToken: continuation,
-                    }))
-                    const objects = listed.Contents ?? []
-                    if (objects.length > 0 && !DRY_RUN) {
-                        await s3.send(new DeleteObjectsCommand({
-                            Bucket: auditBucket,
-                            Delete: { Objects: objects.map(o => ({ Key: o.Key! })) },
-                        }))
-                    }
-                    totalDeleted += objects.length
-                    continuation = listed.NextContinuationToken
-                } while (continuation)
-                console.log(`    S3 objects:      ${totalDeleted}`)
+            // 2. GCS audit archives — list + delete every object under the tenant prefix
+            if (gcs && auditBucket) {
+                const prefix   = `audit-archives/${t.tenant_id}/`
+                const bucket   = gcs.bucket(auditBucket)
+                const [files]  = await bucket.getFiles({ prefix })
+                if (files.length > 0 && !DRY_RUN) {
+                    await Promise.all(files.map(f => f.delete({ ignoreNotFound: true })))
+                }
+                console.log(`    GCS objects:     ${files.length}`)
             }
 
             // 3. Postgres — CASCADE wipes children. Users with no remaining

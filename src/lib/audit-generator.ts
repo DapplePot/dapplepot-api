@@ -1,7 +1,7 @@
 import { createHash } from 'crypto'
 import { chQuery } from './clickhouse.js'
 import { queryRows } from './postgres.js'
-import { uploadAuditArchive, auditArchiveKey } from './s3.js'
+import { uploadAuditArchive, auditArchiveKey } from './gcs.js'
 import { env } from '../env.js'
 import {
   createAuditArchive,
@@ -373,16 +373,18 @@ export async function sealMonthlyArchive(params: {
       sealedAt,
     })
 
-    const period = params.periodStart.slice(0, 7)           // "YYYY-MM"
-    const s3Key  = auditArchiveKey(params.tenantId, period, archiveId)
-    await uploadAuditArchive(s3Key, JSON.stringify(report, null, 2))
+    const period    = params.periodStart.slice(0, 7)           // "YYYY-MM"
+    const objectKey = auditArchiveKey(params.tenantId, period, archiveId)
+    await uploadAuditArchive(objectKey, JSON.stringify(report, null, 2))
 
+    // NOTE: the `s3_bucket` / `s3_key` columns in `audit_archives` are
+    // historical naming — they now hold the GCS bucket + object key.
     await sealAuditArchive({
       archiveId,
       tenantId:     params.tenantId,
       sha256:       report.governance.sha256!,
-      s3Bucket:     env.AUDIT_S3_BUCKET,
-      s3Key,
+      s3Bucket:     env.GCS_APP_BUCKET,
+      s3Key:        objectKey,
       sessionCount: sessions.length,
       eventCount:   events.length,
       findingCount: findings.length,
