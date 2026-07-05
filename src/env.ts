@@ -28,7 +28,8 @@ const envSchema = z.object({
   // Azure App Service injects PORT — fall back to API_PORT then 3000
   API_PORT: z.coerce.number().default(3000),
   PORT: z.coerce.number().optional(),
-  API_CORS_ORIGIN: z.string().default('http://localhost:5173'),
+  // Comma-separated list of allowed origins (dashboard + marketing site + local dev).
+  API_CORS_ORIGIN: z.string().default('http://localhost:5173,http://localhost:5174'),
   CACHE_TTL_OVERVIEW: z.coerce.number().default(30),
   CACHE_TTL_ANALYTICS: z.coerce.number().default(60),
   CACHE_TTL_COST: z.coerce.number().default(300),
