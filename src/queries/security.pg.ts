@@ -251,6 +251,11 @@ export async function getSessionScore(
         s.v3_llm_composite,
         s.v3_asi_composite,
         s.scorer_version, s.scored_at,
+        s.checks_evaluated,
+        s.checks_skipped,
+        s.checks_skipped_by_reason,
+        s.analysis_duration_ms,
+        s.analysis_started_at,
         ar.trust_score, ar.trust_trend
      FROM session_risk_scores s
      LEFT JOIN agent_risk_scores ar
@@ -288,6 +293,14 @@ export async function getSessionScore(
     trustTrend:            row.trust_trend  ?? undefined,
     scorerVersion:         row.scorer_version,
     scoredAt:              row.scored_at.toISOString(),
+    // Engine visibility — populated by the scorer for sessions scored after
+    // migration 031; conditionally spread so exactOptionalPropertyTypes is
+    // satisfied on older sessions (columns null).
+    ...(row.checks_evaluated       != null && { checksEvaluated:       row.checks_evaluated }),
+    ...(row.checks_skipped         != null && { checksSkipped:         row.checks_skipped }),
+    ...(row.checks_skipped_by_reason && { checksSkippedByReason: row.checks_skipped_by_reason }),
+    ...(row.analysis_duration_ms   != null && { analysisDurationMs:    row.analysis_duration_ms }),
+    ...(row.analysis_started_at    && { analysisStartedAt: row.analysis_started_at.toISOString() }),
   }
 }
 
@@ -301,6 +314,7 @@ export async function getSessionFindings(
         framework, owasp_signal_id, sub_check_id, check_score, check_label,
         category, severity, matched_text, detail,
         detection_phase, confidence_tier, confidence,
+        involved_event_ids,
         created_at
      FROM security_findings
      WHERE session_id = $1 AND tenant_id = $2
@@ -323,6 +337,11 @@ export async function getSessionFindings(
     matchedText:     r.matched_text,
     detail:          r.detail,
     detectionPhase:  r.detection_phase,
+    // Postgres UUID[] arrives as an array-of-strings; fall back to [event_id]
+    // for pre-032 rows where the column defaults to {}. Never undefined.
+    involvedEventIds: Array.isArray(r.involved_event_ids) && r.involved_event_ids.length > 0
+                        ? r.involved_event_ids as string[]
+                        : (r.event_id ? [r.event_id] : []),
     confidenceTier:  r.confidence_tier  as ConfidenceTier | undefined ?? undefined,
     confidence:      r.confidence       != null ? Number(r.confidence) : undefined,
     createdAt:       r.created_at.toISOString(),

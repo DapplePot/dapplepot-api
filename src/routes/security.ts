@@ -99,6 +99,56 @@ securityRouter.get('/agents/:id', async (c) => {
   return c.json(profile)
 })
 
+// GET /v1/security/agents/:id/subcheck-firings — shadow-mode evidence.
+// Counts findings per sub-check within a rolling window. Feeds the "fired N×
+// last 7d" ambient stat and the Enforce confirmation modal.
+securityRouter.get('/agents/:id/subcheck-firings', async (c) => {
+  const tenantId    = c.get('tenantId')
+  const agentId     = c.req.param('id')
+  const windowDays  = Number(c.req.query('window_days') ?? '7')
+  const url = `${env.SECURITY_SERVICE_URL}/v1/agents/${agentId}/subcheck-firings`
+        + `?tenant_id=${encodeURIComponent(tenantId)}&window_days=${windowDays}`
+  try {
+    const res = await fetch(url, {
+      headers: { 'X-Internal-Secret': env.INTERNAL_API_SECRET },
+      signal: AbortSignal.timeout(3000),
+    })
+    const data = await res.json()
+    if (!res.ok) return c.json({ firings: {}, window_days: windowDays }, 200)
+    return c.json(data)
+  } catch (err) {
+    console.warn('[security/subcheck-firings] failed:', (err as Error).message)
+    return c.json({ firings: {}, window_days: windowDays }, 200)
+  }
+})
+
+// GET /v1/security/agents/:id/subcheck-firings/:subCheckId/sessions — the actual
+// sessions a specific check would have affected. Powers the "review these 3
+// sessions before enabling Enforce" list.
+securityRouter.get('/agents/:id/subcheck-firings/:subCheckId/sessions', async (c) => {
+  const tenantId    = c.get('tenantId')
+  const agentId     = c.req.param('id')
+  const subCheckId  = c.req.param('subCheckId')
+  const windowDays  = Number(c.req.query('window_days') ?? '7')
+  const limit       = Number(c.req.query('limit') ?? '25')
+  const url = `${env.SECURITY_SERVICE_URL}/v1/agents/${agentId}/subcheck-firings/`
+        + `${encodeURIComponent(subCheckId)}/sessions`
+        + `?tenant_id=${encodeURIComponent(tenantId)}`
+        + `&window_days=${windowDays}&limit=${limit}`
+  try {
+    const res = await fetch(url, {
+      headers: { 'X-Internal-Secret': env.INTERNAL_API_SECRET },
+      signal: AbortSignal.timeout(3000),
+    })
+    const data = await res.json()
+    if (!res.ok) return c.json({ sessions: [], window_days: windowDays, sub_check_id: subCheckId }, 200)
+    return c.json(data)
+  } catch (err) {
+    console.warn('[security/subcheck-firing-sessions] failed:', (err as Error).message)
+    return c.json({ sessions: [], window_days: windowDays, sub_check_id: subCheckId }, 200)
+  }
+})
+
 // GET /v1/security/observed — distinct signal IDs / sub-check IDs that have actually
 // produced findings for this tenant. Used to populate the Sessions page filter dropdowns
 // so users only see live values, not the full 121-row static registry.
@@ -175,8 +225,10 @@ sdkSecurityRouter.use('*', sdkKeyAuth)
 sdkSecurityRouter.use('*', rateLimitMiddleware)
 
 // GET /v1/sdk/security/agents/:id/tool-manifest
-// Returns { tool_manifest: string[], max_tool_calls_per_session: number | null }
-// Used by the langgraph-sdk to enforce the manifest at tool_start time.
+// Returns the governance-fields config the SDK needs to run online checks.
+// Historically named `tool-manifest`; now carries the full policy-field set —
+// each field unlocks a specific online check when non-empty. The SDK forwards
+// them verbatim in every /v1/online-check request body.
 sdkSecurityRouter.get('/agents/:id/tool-manifest', async (c) => {
   const tenantId = c.get('tenantId')
   const agentId  = c.req.param('id')
@@ -184,6 +236,19 @@ sdkSecurityRouter.get('/agents/:id/tool-manifest', async (c) => {
   return c.json({
     tool_manifest:               config.tool_manifest,
     max_tool_calls_per_session:  config.max_tool_calls_per_session,
+    // ── Runtime Guard policy fields — each unlocks one online check ──
+    write_namespace:             config.write_namespace,             // EA-01c
+    network_allowlist:           config.network_allowlist ?? [],     // EA-03b
+    irreversible_tools:          config.irreversible_tools ?? [],    // EA-02a
+    tool_approval_policy:        config.tool_approval_policy,        // EA-02a
+    working_directory:           config.working_directory,           // EA-03a
+    connected_llms:              config.connected_llms ?? [],        // EA-04a
+    environment:                 config.environment,                 // TME-03b
+    privilege_scope:             config.privilege_scope ?? [],       // IPA-01a
+    mcp_endpoints:               config.mcp_endpoints ?? [],         // ASCV-01a
+    sbom_allowlist:              config.sbom_allowlist ?? [],        // ASCV-02b
+    connected_agents:            config.connected_agents ?? [],      // IAC-05a
+    operating_hours:             config.operating_hours,             // RA-01b
   })
 })
 
@@ -406,8 +471,9 @@ securityRouter.put('/agents/:id/alert-config', requireRole('editor'), async (c) 
 
 // PUT /v1/security/agents/:id/subcheck-config
 // Body: { subCheckId: string, online_detection: boolean, action?: OnlineAction }
-// Upserts one sub-check override (online toggle + action) and invalidates the Redis config cache.
-// action defaults to "alert" when omitted. Editor+ only — viewers can read this config but not change it.
+// Upserts one sub-check override (online toggle + action) and invalidates the
+// Redis config cache. Defaults: action='alert'.
+// Editor+ only — viewers can read this config but not change it.
 securityRouter.put('/agents/:id/subcheck-config', requireRole('editor'), async (c) => {
   const tenantId = c.get('tenantId')
   const agentId  = c.req.param('id') as string
@@ -427,17 +493,24 @@ securityRouter.put('/agents/:id/subcheck-config', requireRole('editor'), async (
     return c.json({ error: `action must be one of: ${[...VALID_ACTIONS].join(', ')}` }, 400)
   }
 
-  // Upsert: merge single key into the JSONB overrides column including action
+  // Upsert: merge single key into the JSONB overrides column. Preserves any
+  // other fields already stored under this sub-check.
   await queryRow(
     `INSERT INTO agent_subcheck_overrides (tenant_id, agent_id, overrides, updated_at)
      VALUES ($1, $2,
        jsonb_build_object($3::text,
-         jsonb_build_object('online_detection', $4::boolean, 'action', $5::text)
+         jsonb_build_object(
+           'online_detection', $4::boolean,
+           'action',           $5::text
+         )
        ), now())
      ON CONFLICT (tenant_id, agent_id) DO UPDATE SET
        overrides   = agent_subcheck_overrides.overrides
                      || jsonb_build_object($3::text,
-                          jsonb_build_object('online_detection', $4::boolean, 'action', $5::text)
+                          jsonb_build_object(
+                            'online_detection', $4::boolean,
+                            'action',           $5::text
+                          )
                         ),
        updated_at  = now()`,
     [tenantId, agentId, subCheckId, online_detection, action]

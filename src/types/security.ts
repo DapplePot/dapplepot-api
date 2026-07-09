@@ -47,6 +47,14 @@ export interface SessionRiskScore {
   trustTrend?:            TrustTrend
   scorerVersion:          string          // "3.0.0"
   scoredAt:               string          // ISO 8601
+  // ── Engine visibility ────────────────────────────────────────────────
+  // Populated by the scorer for sessions scored after migration 031;
+  // undefined for older sessions. UI hides the strip when undefined.
+  checksEvaluated?:       number
+  checksSkipped?:         number
+  checksSkippedByReason?: Record<string, string[]>  // { needs_setup: [...], handled_online: [...] }
+  analysisDurationMs?:    number
+  analysisStartedAt?:     string          // ISO 8601
 }
 
 export interface SecurityFinding {
@@ -64,6 +72,14 @@ export interface SecurityFinding {
   matchedText:     string | null     // always redacted before storage
   detail:          string | null
   detectionPhase:  'online' | 'post_session' | 'cross_session'
+  /**
+   * Every event that contributed to this finding firing. For per-event
+   * detections this is typically [eventId]; for session-level scorers that
+   * match a pattern spanning multiple events (multi-turn jailbreak, drift,
+   * aggregate limits), this holds the full contributing set. Empty when the
+   * finding pre-dates migration 032 or is a cross-session pattern.
+   */
+  involvedEventIds: string[]
   // v3 additions
   confidenceTier?: ConfidenceTier
   confidence?:     number            // 0.0–1.0 (confidence_weight)
