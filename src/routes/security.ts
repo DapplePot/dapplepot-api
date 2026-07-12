@@ -43,14 +43,14 @@ securityRouter.get('/overview', async (c) => {
 })
 
 // GET /v1/security/sessions/:id/score
+// Not cached — multi-turn sessions re-score on every graph_end, and caching
+// a null (pre-score) or a v1 (turn-1) result would leave the UI showing stale
+// data for the full TTL. Postgres reads are cheap enough; revisit only if
+// this endpoint shows up in a real hotspot.
 securityRouter.get('/sessions/:id/score', async (c) => {
   const tenantId  = c.get('tenantId')
   const sessionId = c.req.param('id')
-  const score     = await cached(
-    `dp:api:security:score:${tenantId}:${sessionId}`,
-    CACHE_TTL_SESSION_SCORE,
-    () => getSessionScore(tenantId, sessionId)
-  )
+  const score     = await getSessionScore(tenantId, sessionId)
   if (!score) return c.json({ error: { code: 'NOT_FOUND', message: 'No score yet' } }, 404)
   return c.json(score)
 })
